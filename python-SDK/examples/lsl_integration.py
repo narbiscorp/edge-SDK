@@ -162,7 +162,7 @@ class GlassesLSLBridge:
                     # Just publish current state
                     self.publish_state(self.current_opacity)
                 
-                await asyncio.sleep(0.1)  # 10 Hz
+                await asyncio.sleep(0.1)  # 10 Hz — keeps opacity writes under the <= 20 Hz cap
         
         finally:
             self.running = False
@@ -267,7 +267,7 @@ class LSLNeurofeedback:
                     if int(elapsed) % 5 == 0:  # Every 5 seconds
                         print(f"  Alpha: {smoothed:.3f} -> Opacity: {opacity}")
                 
-                await asyncio.sleep(0.05)  # 20 Hz update
+                await asyncio.sleep(0.05)  # 20 Hz — max recommended rate for streaming set_opacity
         
         finally:
             self.running = False

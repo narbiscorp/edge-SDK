@@ -1,7 +1,11 @@
-# EDGE Glasses BLE API Reference
+# EDGE Glasses Python SDK — API Reference
 
-**Firmware Version:** 4.0  
-**Last Updated:** February 2026
+**Firmware 4.15.6+ — July 2026**
+**SDK version:** 2.0.0
+
+This document maps every Python SDK method to the exact bytes it writes over BLE.
+For the full protocol (OTA, status/notify, PPG stream), see the
+[BLE protocol deep-dive](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/).
 
 ---
 
@@ -9,244 +13,139 @@
 
 | Parameter | Value |
 |-----------|-------|
-| Device Name | `Smart_Glasses` |
-| Service UUID | `0x00FF` (16-bit) or `000000ff-0000-1000-8000-00805f9b34fb` (128-bit) |
-| Characteristic UUID | `0xFF01` (16-bit) or `0000ff01-0000-1000-8000-00805f9b34fb` (128-bit) |
-| Write Type | Write with response |
+| Advertised name | `Narbis_Edge` (exact match — the SDK filters on this) |
+| Service UUID | `0x00FF` (`000000ff-0000-1000-8000-00805f9b34fb`) |
+| Control characteristic | `0xFF01` (`0000ff01-0000-1000-8000-00805f9b34fb`) — read + write, all commands |
+| Other characteristics | `0xFF02` OTA data, `0xFF03` status/notify, `0xFF04` PPG stream — out of SDK scope, see protocol doc |
+| BLE stack | NimBLE; MTU 247; TX 0 dBm; no pairing/bonding |
+| Write type | Write with response |
+| Idle teardown | **2 minutes** with no client connected → full radio power-down; magnet tap re-arms advertising |
+| Supervision timeout | 32 s |
+| NACKs | None — firmware silently clamps/drops bad args; the SDK validates client-side |
 
 ---
 
-## Commands
+## The ≥ 2-byte write rule
 
-### Legacy Command (Single Byte)
-
-Any single byte write is treated as a direct opacity command:
-
-| Byte | Result |
-|------|--------|
-| `0x00` | Clear (0% opacity, fully transparent) |
-| `0x01` - `0xFE` | Proportional opacity |
-| `0xFF` | Dark (100% opacity, fully opaque) |
-
-**Mapping:** Linear `0-255` → `0-100%` duty cycle
-
-**Behavior:** Stops any running session, holds static opacity until next command.
-
-**Example:**
-```
-Write: [0x80]  → 50% opacity
-Write: [0xFF]  → 100% opacity (full dark)
-Write: [0x00]  → 0% opacity (clear)
-```
+A **1-byte write is the legacy opacity command** (0-255 → 0-100% static duty).
+Therefore every opcode command must be at least 2 bytes — the SDK pads
+argument-less opcodes to `[opcode, 0x00]`. Only `set_opacity()` intentionally
+sends a single byte.
 
 ---
 
-### Extended Commands (Multi-byte)
+## Method → Wire Mapping
 
-All extended commands start with `0xA_` prefix to avoid collision with legacy single-byte range.
+### Opacity (legacy single-byte write)
 
-#### 0xA1 - Set Strobe Range
+| Method | Wire bytes | Notes |
+|--------|-----------|-------|
+| `set_opacity(value)` | `[value]` (1 byte, 0-255) | 0-255 → 0-100% static duty; stops current mode; not persisted. Streamable up to ~20 Hz. |
+| `clear()` | `[0x00]` | Fully transparent |
+| `dark()` | `[0xFF]` | Fully opaque |
 
-Set the strobe frequency progression for timed sessions.
+### Parameters
 
-| Byte | Value |
-|------|-------|
-| 0 | `0xA1` |
-| 1 | `start_hz` (1-50) |
-| 2 | `end_hz` (1-50) |
+| Method | Wire bytes | Range (SDK clamps) | Persisted (NVS) |
+|--------|-----------|--------------------|-----------------|
+| `set_brightness(percent)` | `[0xA2, pct]` | 0-100% | yes |
+| `set_duration(minutes)` | `[0xA4, min]` | 1-60 min (auto-sleep at end) | yes |
+| `set_static(duty)` | `[0xA5, duty]` | 0-100% | no |
+| `set_strobe_frequency(hz)` | `[0xAB, hz]` | 1-50 Hz | yes |
+| `set_strobe_duty(percent)` | `[0xAC, pct]` | 10-90% | yes |
 
-**Behavior:** Restarts session. Frequency progresses linearly from start to end over session duration.
+### Modes
 
-**Example:**
-```
-Write: [0xA1, 0x0C, 0x08]  → 12Hz to 8Hz
-Write: [0xA1, 0x0F, 0x04]  → 15Hz to 4Hz
-```
+| Method | Wire bytes | Notes |
+|--------|-----------|-------|
+| `start_strobe(hz=None, duty_pct=None)` | optional `[0xAB, hz]`, `[0xAC, pct]`, then `[0xA6, 0x00]` | 0xA6 arg is ignored (SDK sends 0). Omitted params keep stored values. |
+| `start_breathe(bpm=..., inhale_pct=..., hold_top_ms=..., hold_bottom_ms=..., waveform=..., with_strobe=False)` | writes only the params given, then `[0xB0, arg]` | `arg` = `0x00` breathe / `0x01` breathe+strobe (fw ≥ 4.15.6) |
+| `sync_breath(cycle_ms, inhale_pct=40)` | `[0xBA, cycle_lo, cycle_hi, inhale_pct]` | `cycle_ms` as u16 little-endian; 4 bytes total on wire. See boundary rule below. |
 
----
+`start_breathe` parameter writes:
 
-#### 0xA2 - Set Brightness
+| Parameter | Wire bytes | Range (SDK clamps) | Persisted (NVS) |
+|-----------|-----------|--------------------|-----------------|
+| `bpm` | `[0xB1, bpm]` | 1-30 BPM (integer — use `sync_breath` for fractional rates) | yes |
+| `inhale_pct` | `[0xB2, pct]` | 10-90% | yes |
+| `hold_top_ms` | `[0xB3, ms // 100]` | 0-5000 ms → 0-50 units of 100 ms | yes |
+| `hold_bottom_ms` | `[0xB4, ms // 100]` | 0-5000 ms → 0-50 units of 100 ms | yes |
+| `waveform` | `[0xB5, w]` | `Waveform.SINE` = 0, `Waveform.LINEAR` = 1 | yes |
 
-Set maximum brightness level.
+### Power / Maintenance
 
-| Byte | Value |
-|------|-------|
-| 0 | `0xA2` |
-| 1 | `brightness` (0-100) |
+| Method | Wire bytes | Notes |
+|--------|-----------|-------|
+| `sleep()` | `[0xA7, 0x00]` | Deep sleep now; arg ignored (padded) |
+| `factory_reset()` | `[0xBF, 0x00]` | Reset NVS settings; arg ignored (padded) |
+| `send_command(opcode, payload=None)` | `[opcode, ...payload]` padded to ≥ 2 B | Low-level escape hatch |
 
-**Behavior:** Does NOT restart session. Takes effect immediately.
+### Preset Sessions (fixed-parameter)
 
-**Example:**
-```
-Write: [0xA2, 0x64]  → 100% brightness
-Write: [0xA2, 0x50]  → 80% brightness
-```
+The firmware no longer ramps any parameter over the session; presets just
+configure the renderer and set the auto-sleep duration.
 
----
-
-#### 0xA3 - Set Breathing Pattern
-
-Configure the 4-phase breathing cycle.
-
-| Byte | Value |
-|------|-------|
-| 0 | `0xA3` |
-| 1 | `inhale_time` (×0.1 seconds) |
-| 2 | `hold_in_end` (×0.1 seconds) |
-| 3 | `exhale_time` (×0.1 seconds) |
-| 4 | `hold_out_end` (×0.1 seconds) |
-
-**Phases:**
-1. **Inhale:** Lenses go clear → dark (fixed duration)
-2. **Hold In:** Lenses stay dark (grows from 0 to `hold_in_end`)
-3. **Exhale:** Lenses go dark → clear (fixed duration)
-4. **Hold Out:** Lenses stay clear (grows from 0 to `hold_out_end`)
-
-**Behavior:** Restarts session. Hold times progress linearly over session duration.
-
-**Example:**
-```
-Write: [0xA3, 0x28, 0x28, 0x28, 0x28]  → 4.0s inhale, 0→4.0s hold, 4.0s exhale, 0→4.0s hold
-Write: [0xA3, 0x32, 0x32, 0x32, 0x32]  → 5.0s all phases
-```
+| Method | Sequence sent |
+|--------|---------------|
+| `session_relax(duration=10)` | `[0xA2, 100]`, `[0xB1, 5]`, `[0xB5, 0]`, `[0xB0, 0]`, `[0xA4, min]` — 5 BPM sine, brightness 100 |
+| `session_meditate(duration=10)` | `[0xB1, 6]`, `[0xB5, 0]`, `[0xB0, 0]`, `[0xA4, min]` — 6 BPM sine (device default) |
+| `session_focus(duration=10)` | `[0xAB, 12]`, `[0xB1, 8]`, `[0xB0, 1]`, `[0xA4, min]` — breathe+strobe, 12 Hz, 8 BPM |
+| `session_sleep(duration=15)` | `[0xB1, 4]`, `[0xB5, 0]`, `[0xB0, 0]`, `[0xA4, min]` — 4 BPM sine |
 
 ---
 
-#### 0xA4 - Set Session Duration
+## 0xBA Breathe Sync — boundary rule
 
-Set the total session length.
+`sync_breath(cycle_ms, inhale_pct=40)` (firmware ≥ 4.15.5):
 
-| Byte | Value |
-|------|-------|
-| 0 | `0xA4` |
-| 1 | `minutes` (1-60) |
-
-**Behavior:** Restarts session. Device auto-sleeps when session ends.
-
-**Example:**
-```
-Write: [0xA4, 0x0A]  → 10 minutes
-Write: [0xA4, 0x14]  → 20 minutes
-```
+- Restarts the breathe cosine **at the instant of the write** and sets the EXACT
+  cycle length in milliseconds — this is how you get fractional breathing rates
+  (`0xB1` is integer-BPM only).
+- **Send only at the breath-cycle boundary (inhale onset), never mid-breath** —
+  the waveform restarts immediately on receipt.
+- Auto-expires **2 cycles** after the last sync, reverting to the stored
+  integer-BPM rate — re-send once per breath to stay locked.
+- Ignored by older firmware; always safe to send.
 
 ---
 
-#### 0xA5 - Static Override
+## Command Summary
 
-Hold at a fixed duty cycle, stopping any running session.
-
-| Byte | Value |
-|------|-------|
-| 0 | `0xA5` |
-| 1 | `duty` (0-100) |
-
-**Behavior:** Stops session, holds static duty until `0xA6` resume or new command.
-
-**Example:**
-```
-Write: [0xA5, 0x32]  → Hold at 50%
-Write: [0xA5, 0x64]  → Hold at 100%
-Write: [0xA5, 0x00]  → Hold at 0% (clear)
-```
-
----
-
-#### 0xA6 - Resume Session
-
-Restart the timed session with current parameters.
-
-| Byte | Value |
-|------|-------|
-| 0 | `0xA6` |
-
-**Behavior:** Clears override, restarts session from beginning.
-
-**Example:**
-```
-Write: [0xA6]  → Restart session
-```
+| Opcode | Name | Arg | Persisted (NVS) | SDK method |
+|--------|------|-----|-----------------|------------|
+| *(1 byte)* | Legacy opacity | 0-255 → 0-100% static duty; stops current mode | no | `set_opacity` |
+| `0xA2` | Brightness | 0-100% | yes | `set_brightness` |
+| `0xA4` | Session duration | 1-60 min (auto-sleep at end) | yes | `set_duration` |
+| `0xA5` | Static mode + duty | 0-100% | no | `set_static` |
+| `0xA6` | Start strobe mode | arg ignored (send 0) | no | `start_strobe` |
+| `0xA7` | Sleep now | arg ignored (send 0) | no | `sleep` |
+| `0xAB` | Strobe frequency | 1-50 Hz | yes | `set_strobe_frequency` |
+| `0xAC` | Strobe duty | 10-90% | yes | `set_strobe_duty` |
+| `0xB0` | Start breathe mode | `0x00` breathe / `0x01` breathe+strobe (fw ≥ 4.15.6) | no | `start_breathe` |
+| `0xB1` | Breathe rate | 1-30 BPM (integer) | yes | `start_breathe(bpm=...)` |
+| `0xB2` | Breathe inhale ratio | 10-90% | yes | `start_breathe(inhale_pct=...)` |
+| `0xB3` | Breathe hold-top | 0-50 (×100 ms) | yes | `start_breathe(hold_top_ms=...)` |
+| `0xB4` | Breathe hold-bottom | 0-50 (×100 ms) | yes | `start_breathe(hold_bottom_ms=...)` |
+| `0xB5` | Breathe waveform | 0 sine / 1 linear | yes | `start_breathe(waveform=...)` |
+| `0xBA` | Breathe sync | `[cycle_ms:u16 LE][inhale_pct:u8]` | no | `sync_breath` |
+| `0xBF` | Factory reset | arg ignored (send 0) | — | `factory_reset` |
+| `0xA8`/`0xA9`/`0xAA`/`0xAD` | OTA | — | — | not an SDK method — see [protocol doc](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/) |
 
 ---
 
-#### 0xA7 - Sleep
+## Lens physics note
 
-Enter deep sleep immediately.
-
-| Byte | Value |
-|------|-------|
-| 0 | `0xA7` |
-
-**Behavior:** PWM off, enters deep sleep. Wake by opening arms (Hall sensor).
-
-**Example:**
-```
-Write: [0xA7]  → Sleep now
-```
+Duty 1-100% maps to raw 265-1023 — a perceptual floor so 1% is already visible
+(firmware ≥ 4.15.4). Duty 0 is fully clear.
 
 ---
 
-## Command Summary Table
+## Legacy / unused opcodes
 
-| Command | Bytes | Description | Restarts Session |
-|---------|-------|-------------|------------------|
-| Legacy | `[0x00-0xFF]` | Direct opacity 0-255 | Stops session |
-| Strobe | `[0xA1, start, end]` | Set Hz range 1-50 | Yes |
-| Brightness | `[0xA2, pct]` | Set max brightness 0-100 | No |
-| Breathing | `[0xA3, inh, h_in, exh, h_out]` | Set pattern (×0.1s) | Yes |
-| Duration | `[0xA4, mins]` | Set length 1-60 min | Yes |
-| Override | `[0xA5, duty]` | Hold at duty 0-100% | Stops session |
-| Resume | `[0xA6]` | Restart session | Yes |
-| Sleep | `[0xA7]` | Enter deep sleep | N/A |
-
----
-
-## Default Values
-
-| Parameter | Default |
-|-----------|---------|
-| Session Duration | 10 minutes |
-| Strobe Start | 12 Hz |
-| Strobe End | 8 Hz |
-| Brightness | 100% |
-| Inhale Time | 4.0s |
-| Hold In End | 4.0s |
-| Exhale Time | 4.0s |
-| Hold Out End | 4.0s |
-
----
-
-## Session Behavior
-
-1. **Boot:** Device wakes, starts session automatically
-2. **Running:** Strobe frequency and hold times progress linearly
-3. **End:** Session completes, device enters deep sleep
-4. **Wake:** Open arms to wake and start new session
-
----
-
-## Hardware Notes
-
-| Item | Value |
-|------|-------|
-| MCU | ESP32-PICO-D4 |
-| PWM Pin | GPIO27 |
-| Hall Sensor | GPIO4 (LOW = arms open) |
-| PWM Frequency | 1 kHz |
-| PWM Dead Zone | Duty 1-100% maps to raw 400-1024 (skips invisible range) |
-| Active Current | ~29 mA |
-| Sleep Current | ~16 µA |
-
----
-
-## Example: Configure Custom Session
-
-To start a 20-minute relaxation session (10→4 Hz, 5s breathing):
-
-```
-Write: [0xA2, 0x64]                    # 100% brightness
-Write: [0xA3, 0x32, 0x32, 0x32, 0x32]  # 5.0s breathing pattern
-Write: [0xA1, 0x0A, 0x04]              # 10→4 Hz strobe
-Write: [0xA4, 0x14]                    # 20 minutes (restarts session)
-```
-
-Order matters: send duration last since it restarts the session.
+`0xB6` pulse-on-beat, `0xB7` PPG program 0-3, `0xB8` coherence difficulty,
+`0xB9` adaptive pacer, `0xCA` external-IBI injection, `0xCB` HR source,
+`0xD0` detector reset, `0xE0` coherence tuning — the on-board coherence pipeline.
+Functional but unused: all processing is app-side now. The Edge↔earclip BLE relay
+is compile-disabled on stock builds. See
+[protocol doc §4.7](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/)
+for the full story. The SDK does not expose these.

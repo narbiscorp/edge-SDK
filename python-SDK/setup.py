@@ -5,13 +5,13 @@ with open("README.md", "r", encoding="utf-8") as f:
 
 setup(
     name="edge-glasses",
-    version="1.0.0",
+    version="2.0.0",
     author="EDGE Technologies",
     author_email="dev@edge-glasses.com",
     description="Python SDK for EDGE Smart Glasses",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/edge-glasses/edge-glasses-python",
+    url="https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",

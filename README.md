@@ -11,6 +11,8 @@ Open-source smart LCD glasses for meditation, neurofeedback, and biofeedback app
 
 EDGE glasses feature LCD lenses that dynamically change opacity via Bluetooth. An open platform for biofeedback, neurofeedback, and human-computer interaction research.
 
+**Architecture:** all signal processing runs app-side — the glasses are a display. Your app computes its feedback signal (EEG alpha, HRV coherence, GSR, anything) and drives the lens by commanding the firmware's breathe / static / strobe renderer. The firmware still ships a legacy on-board coherence pipeline (sensor-driven PPG programs), but it is unused by current apps and not part of the SDK API.
+
 ### Applications
 
 | Domain | Use Case |
@@ -29,7 +31,7 @@ EDGE glasses feature LCD lenses that dynamically change opacity via Bluetooth. A
 ### Why EDGE?
 
 - **Open Protocol** — Simple BLE API, no vendor lock-in
-- **Low Latency** — 20+ Hz update rate for real-time feedback
+- **Low Latency** — 20 Hz update rate for real-time feedback
 - **Cross-Platform SDKs** — Python for research, JS for web apps
 - **Sensor Agnostic** — Works with any biosignal source via LSL/brainflow
 - **Research Ready** — Compatible with OpenBCI, Muse, Polar, and lab equipment
@@ -46,13 +48,15 @@ EDGE glasses feature LCD lenses that dynamically change opacity via Bluetooth. A
 
 ## Repositories
 
-| Repo | Description |
-|------|-------------|
-| [firmware](https://github.com/edge-glasses/firmware) | ESP32 firmware with BLE GATT server |
-| [python-sdk](https://github.com/edge-glasses/python-sdk) | Python SDK with OpenBCI/Muse/Polar examples |
-| [js-sdk](https://github.com/edge-glasses/js-sdk) | JavaScript/TypeScript SDK for web apps |
+| Location | Description |
+|----------|-------------|
+| [Protocol reference](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/) | Published firmware BLE protocol doc (full protocol, OTA, legacy opcodes) |
+| [python-SDK/](python-SDK/) | Python SDK with OpenBCI/Muse/Polar examples |
+| [js-SDK/](js-SDK/) | JavaScript/TypeScript SDK for web apps |
 
 ## Quick Start
+
+The glasses advertise as **`Narbis_Edge`**. If they don't show up in a scan, tap the magnet on the temple — the radio powers down after 2 minutes with no client connected.
 
 ### Python
 ```bash
@@ -66,7 +70,7 @@ import asyncio
 async def main():
     async with Glasses() as glasses:
         await glasses.set_opacity(128)        # 50% dark
-        await glasses.session_meditate(10)    # 10-min session
+        await glasses.session_meditate(10)    # 10-min breathe session, 6 BPM
 
 asyncio.run(main())
 ```
@@ -83,6 +87,13 @@ const glasses = new Glasses();
 await glasses.connect();
 await glasses.setOpacity(128);
 await glasses.sessionMeditate(10);
+```
+
+Or drive the breathe engine directly:
+
+```python
+await glasses.start_breathe(bpm=6, inhale_pct=40)   # paced breathing, on-board
+await glasses.sync_breath(10000, 40)                # optional phase-lock, once per breath
 ```
 
 ## Integrations
@@ -117,47 +128,75 @@ Works with popular biosignal platforms and research equipment. Your computer run
 ### Examples
 | Example | Description |
 |---------|-------------|
-| [openbci_feedback.py](https://github.com/edge-glasses/python-sdk/blob/main/examples/openbci_feedback.py) | EEG alpha neurofeedback |
-| [muse_eeg.py](https://github.com/edge-glasses/python-sdk/blob/main/examples/muse_eeg.py) | Meditation/focus training |
-| [polar_hrv.py](https://github.com/edge-glasses/python-sdk/blob/main/examples/polar_hrv.py) | HRV coherence training |
-| [lsl_integration.py](https://github.com/edge-glasses/python-sdk/blob/main/examples/lsl_integration.py) | Any LSL-compatible source |
-| [Integration Guide](https://github.com/edge-glasses/python-sdk/blob/main/docs/INTEGRATION_GUIDE.md) | Full setup documentation |
+| [openbci_feedback.py](python-SDK/examples/openbci_feedback.py) | EEG alpha neurofeedback |
+| [muse_eeg.py](python-SDK/examples/muse_eeg.py) | Meditation/focus training |
+| [polar_hrv.py](python-SDK/examples/polar_hrv.py) | HRV coherence training |
+| [lsl_integration.py](python-SDK/examples/lsl_integration.py) | Any LSL-compatible source |
+| [Integration Guide](python-SDK/docs/INTEGRATION_GUIDE.md) | Full setup documentation |
 
 ## BLE Protocol
 
-Simple byte-based protocol for direct integration:
+Simple byte-based protocol for direct integration. Service `0x00FF`, control characteristic `0xFF01`, write with response.
 
 | Command | Bytes | Description |
 |---------|-------|-------------|
-| Opacity | `[0x00-0xFF]` | Set lens opacity (single byte) |
-| Strobe | `[0xA1, start, end]` | Set frequency range 1-50 Hz |
-| Brightness | `[0xA2, percent]` | Set max brightness 0-100% |
-| Breathing | `[0xA3, inh, h_in, exh, h_out]` | Set breathing pattern |
-| Duration | `[0xA4, minutes]` | Set session length |
-| Hold | `[0xA5, duty]` | Static hold at duty % |
-| Resume | `[0xA6]` | Restart session |
-| Sleep | `[0xA7]` | Enter deep sleep |
+| Opacity (legacy) | `[0x00-0xFF]` | Single byte = lens opacity 0-255; stops current mode |
+| Brightness | `[0xA2, pct]` | Max brightness 0-100% (persisted) |
+| Duration | `[0xA4, minutes]` | Session length 1-60 min, auto-sleep at end (persisted) |
+| Static | `[0xA5, duty]` | Static mode at duty 0-100% |
+| Start strobe | `[0xA6, 0x00]` | Start strobe mode |
+| Sleep | `[0xA7, 0x00]` | Enter deep sleep now |
+| Strobe frequency | `[0xAB, hz]` | 1-50 Hz (persisted) |
+| Strobe duty | `[0xAC, pct]` | 10-90% (persisted) |
+| Start breathe | `[0xB0, mode]` | `0x00` breathe / `0x01` breathe+strobe |
+| Breathe rate | `[0xB1, bpm]` | 1-30 BPM (persisted) |
+| Breathe inhale ratio | `[0xB2, pct]` | 10-90% (persisted) |
+| Breathe hold-top | `[0xB3, n]` | 0-50 × 100 ms (persisted) |
+| Breathe hold-bottom | `[0xB4, n]` | 0-50 × 100 ms (persisted) |
+| Breathe waveform | `[0xB5, w]` | 0 sine / 1 linear (persisted) |
+| Breathe sync | `[0xBA, cycle_lo, cycle_hi, inhale_pct]` | Phase-lock; send at breath boundary only |
+| Factory reset | `[0xBF, 0x00]` | Reset persisted settings |
 
-Full protocol: [API Reference](https://github.com/edge-glasses/firmware/blob/main/docs/API_REFERENCE.md)
+**Important:** every opcode command must be at least 2 bytes — a 1-byte write is always interpreted as the legacy opacity command. Pad argument-less opcodes with `0x00`.
+
+Full protocol (including OTA and legacy opcodes): [Protocol reference](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/) · [API Reference](firmware/API_REFERENCE.md)
+
+### Connection quirks
+
+- Advertised name is exactly `Narbis_Edge` — filter on it.
+- **2-minute teardown:** with no client connected, the radio powers down fully after 2 minutes. Tap the magnet on the temple to re-arm advertising.
+- **No NACKs:** the firmware silently clamps or drops out-of-range arguments. Validate values client-side (the SDKs do).
+- MTU 247, no pairing/bonding, 32 s supervision timeout.
 
 ## Features
 
-### Timed Sessions
-Glasses run autonomous meditation sessions with:
-- Strobe frequency that slows over time (e.g., 12→8 Hz)
-- Breathing pattern with growing hold times
-- Auto-sleep when session completes
+### Standalone programs
 
-### Preset Programs
-| Preset | Strobe | Breathing | Best For |
-|--------|--------|-----------|----------|
-| Relax | 10→4 Hz | 5s cycles | Stress relief, wind-down |
-| Focus | 15→10 Hz | 3s cycles | Concentration, study |
-| Meditate | 12→8 Hz | 4s cycles | General practice |
-| Sleep | 6→2 Hz | 6s cycles | Pre-sleep routine |
+The glasses work without any app. A short magnet tap (0.3-4 s) on the temple cycles through three sensor-free programs; the lens signals the new program with N slow fade-dark pulses:
 
-### Real-time Control
-Update opacity at 20+ Hz for smooth neurofeedback:
+| Program | Behavior |
+|---------|----------|
+| 1 — Breathe | 6 BPM sine, lens tint follows the waveform (boot default) |
+| 2 — Breathe + Strobe | 10 Hz strobe, dark-phase duty modulated by the breathing waveform |
+| 3 — Strobe | Plain 10 Hz strobe |
+
+Hold the magnet closed ≥ 5 s for deep sleep.
+
+### Preset sessions
+
+Presets are fixed-parameter: the firmware no longer ramps strobe frequency or grows hold times over a session. Each preset configures the breathe/strobe engine, sets the duration, and starts; the device auto-sleeps when the session ends.
+
+| Preset | Mode | Parameters | Best For |
+|--------|------|------------|----------|
+| `sessionRelax(10)` | Breathe | 5 BPM sine, brightness 100 | Stress relief, wind-down |
+| `sessionMeditate(10)` | Breathe | 6 BPM sine (device default) | General practice |
+| `sessionFocus(10)` | Breathe + strobe | 12 Hz strobe, 8 BPM | Concentration, study |
+| `sessionSleep(15)` | Breathe | 4 BPM sine | Pre-sleep routine |
+
+### Real-time control
+
+Update opacity for smooth neurofeedback — keep it at or below 20 Hz:
+
 ```python
 while True:
     alpha = get_eeg_alpha()  # Your processing
@@ -165,12 +204,15 @@ while True:
     await asyncio.sleep(0.05)
 ```
 
+For breathing entrainment, prefer the on-board breathe engine (configure, start, optionally `syncBreath()` once per breath at the cycle boundary) over streaming per-tick opacity.
+
 ## Documentation
 
-- [API Reference](https://github.com/edge-glasses/firmware/blob/main/docs/API_REFERENCE.md) — Complete BLE protocol
-- [Integration Guide](https://github.com/edge-glasses/python-sdk/blob/main/docs/INTEGRATION_GUIDE.md) — OpenBCI, Muse, Polar, LSL setup
-- [Python SDK Docs](https://github.com/edge-glasses/python-sdk#readme)
-- [JavaScript SDK Docs](https://github.com/edge-glasses/js-sdk#readme)
+- [API Reference](firmware/API_REFERENCE.md) — Complete BLE command reference
+- [Protocol deep-dive](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/) — Full firmware protocol, OTA, legacy opcodes
+- [Integration Guide](python-SDK/docs/INTEGRATION_GUIDE.md) — OpenBCI, Muse, Polar, LSL setup
+- [Python SDK Docs](python-SDK/README.md)
+- [JavaScript SDK Docs](js-SDK/README.md)
 
 ## Community
 

@@ -1,51 +1,31 @@
-# EDGE Glasses Firmware
+# EDGE Glasses Firmware Docs
 
-ESP32 firmware for EDGE Smart LCD Glasses.
+This folder contains the [BLE API Reference](API_REFERENCE.md) for the EDGE glasses firmware. The firmware source itself lives elsewhere; only the protocol documentation is kept here.
 
-## Features
+## The device
 
-- BLE GATT server for wireless control
-- Timed meditation sessions with breathing patterns
-- Strobe frequency control (1-50 Hz)
-- Hall sensor sleep/wake detection
-- Power optimized (~29mA active, ~16µA sleep)
+EDGE glasses are ESP32-PICO-D4 smart LCD glasses. They advertise over BLE as `Narbis_Edge` (service `0x00FF`, control characteristic `0xFF01`) and act as a display for app-side biofeedback: the app computes its signal and drives the lens via the breathe / static / strobe renderer. Three standalone programs (breathe, breathe+strobe, strobe) run without any app and are cycled with a magnet tap on the temple. The radio powers down after 2 minutes with no client connected — tap the magnet to re-arm advertising.
 
-## Hardware
+## Quick Reference
 
-- MCU: ESP32-PICO-D4
-- PWM Output: GPIO27
-- Hall Sensor: GPIO4
-- BLE Service: 0x00FF
-
-## Build
-
-Requires ESP-IDF v5.x
-
-\`\`\`bash
-idf.py set-target esp32
-idf.py build
-idf.py -p /dev/ttyUSB0 flash monitor
-\`\`\`
-
-## BLE Protocol
-
-See [API Reference](docs/API_REFERENCE.md) for complete command documentation.
-
-### Quick Reference
+All opcode commands must be at least 2 bytes — a 1-byte write is the legacy opacity command.
 
 | Bytes | Action |
 |-------|--------|
-| `[0x00-0xFF]` | Set opacity (single byte) |
-| `[0xA1, start, end]` | Set strobe Hz range |
-| `[0xA2, percent]` | Set brightness |
-| `[0xA5, duty]` | Static hold |
-| `[0xA6]` | Resume session |
-| `[0xA7]` | Sleep |
+| `[0x00-0xFF]` | Set opacity (single byte, legacy) |
+| `[0xA2, pct]` | Set brightness 0-100% |
+| `[0xA4, min]` | Set session duration 1-60 min |
+| `[0xA5, duty]` | Static mode at duty 0-100% |
+| `[0xA6, 0x00]` | Start strobe mode |
+| `[0xA7, 0x00]` | Sleep now |
+| `[0xAB, hz]` | Strobe frequency 1-50 Hz |
+| `[0xAC, pct]` | Strobe duty 10-90% |
+| `[0xB0, mode]` | Start breathe (`0x00`) / breathe+strobe (`0x01`) |
+| `[0xB1, bpm]` | Breathe rate 1-30 BPM |
+| `[0xBA, ms_lo, ms_hi, pct]` | Breathe sync (cycle boundary only) |
+| `[0xBF, 0x00]` | Factory reset |
 
-## SDKs
-
-- [Python SDK](https://github.com/edge-glasses/python-sdk)
-- [JavaScript SDK](https://github.com/edge-glasses/js-sdk)
+See the [API Reference](API_REFERENCE.md) for the complete command set, and the [published protocol doc](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/) for the full protocol and OTA flow.
 
 ## License
 

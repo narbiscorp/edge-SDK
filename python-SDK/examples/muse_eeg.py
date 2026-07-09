@@ -218,18 +218,22 @@ class MuseMeditationTrainer:
         self.running = True
         start = time.time()
         duration_seconds = duration_minutes * 60
-        
+        last_write = 0.0
+
         try:
             while self.running and (time.time() - start) < duration_seconds:
                 # Pull EEG samples
                 sample, _ = self.processor.inlet.pull_sample(timeout=0.1)
                 if sample:
                     self.processor.process_sample(sample)
-                
+
                 # Update glasses based on meditation score
-                opacity = int(self.meditation_score * 255)
-                await self.glasses.set_opacity(opacity)
-                
+                # (EEG is pulled fast, but lens writes are capped at <= 20 Hz)
+                if time.time() - last_write >= 0.05:
+                    opacity = int(self.meditation_score * 255)
+                    await self.glasses.set_opacity(opacity)
+                    last_write = time.time()
+
                 # Status update every 10 seconds
                 elapsed = time.time() - start
                 if int(elapsed) % 10 == 0 and int(elapsed) != int(elapsed - 0.1):
@@ -310,17 +314,21 @@ class MuseFocusTrainer:
         self.running = True
         start = time.time()
         duration_seconds = duration_minutes * 60
-        
+        last_write = 0.0
+
         try:
             while self.running and (time.time() - start) < duration_seconds:
                 sample, _ = self.processor.inlet.pull_sample(timeout=0.1)
                 if sample:
                     self.processor.process_sample(sample)
-                
+
                 # Higher focus = clearer glasses (inverted from meditation)
-                opacity = int((1 - self.focus_score) * 255)
-                await self.glasses.set_opacity(opacity)
-                
+                # (EEG is pulled fast, but lens writes are capped at <= 20 Hz)
+                if time.time() - last_write >= 0.05:
+                    opacity = int((1 - self.focus_score) * 255)
+                    await self.glasses.set_opacity(opacity)
+                    last_write = time.time()
+
                 await asyncio.sleep(0.01)
         
         finally:

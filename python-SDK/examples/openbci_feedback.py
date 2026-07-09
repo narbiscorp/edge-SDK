@@ -171,7 +171,7 @@ class OpenBCIFeedback:
                     bar = "█" * int(normalized * 20) + "░" * (20 - int(normalized * 20))
                     print(f"  [{bar}] Alpha: {normalized:.2f} | Opacity: {opacity:3d} | {remaining}s left")
                 
-                await asyncio.sleep(0.05)  # 20 Hz update
+                await asyncio.sleep(0.05)  # 20 Hz — max recommended rate for streaming set_opacity
         
         finally:
             self.running = False

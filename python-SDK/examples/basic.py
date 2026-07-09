@@ -8,15 +8,10 @@ from edge_glasses import Glasses
 
 
 async def main():
-    print("Scanning for EDGE Glasses...")
-    devices = await Glasses.scan(timeout=5.0)
-    
-    if not devices:
-        print("No devices found!")
-        return
-    
-    print(f"Found: {devices[0]}")
-    
+    print("Connecting to EDGE Glasses (Narbis_Edge)...")
+    # Note: the glasses power their radio down after 2 minutes with no
+    # client connected. If the device isn't found, tap the magnet on the
+    # temple to re-arm advertising.
     async with Glasses() as glasses:
         print("Connected!")
         
