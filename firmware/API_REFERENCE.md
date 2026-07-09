@@ -12,7 +12,7 @@
 | Device Name | `Narbis_Edge` (exact match — filter on this) |
 | Service UUID | `0x00FF` (16-bit) or `000000ff-0000-1000-8000-00805f9b34fb` (128-bit) |
 | Control Characteristic | `0xFF01` (read + write) — all commands below |
-| Other Characteristics | `0xFF02` OTA data, `0xFF03` status/notify, `0xFF04` PPG stream — out of SDK scope, see the [protocol doc](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/) |
+| Other Characteristics | `0xFF02` OTA data, `0xFF03` status/notify, `0xFF04` PPG stream — out of SDK scope, see the [protocol doc](../docs/bluetooth-protocol.md) |
 | MTU | 247 |
 | Pairing/Bonding | None |
 | Idle Teardown | **2 minutes** with no client connected → full radio power-down; tap the magnet to re-arm advertising |
@@ -65,7 +65,7 @@ Any single-byte write sets lens opacity directly:
 | `0xB5` | Breathe waveform | 0 sine / 1 linear | yes | |
 | `0xBA` | Breathe sync | `[cycle_ms:u16 LE][inhale_pct:u8]` | no | See dedicated section below |
 | `0xBF` | Factory reset | ignored (send `0x00`) | — | Resets persisted settings |
-| `0xA8`/`0xA9`/`0xAA`/`0xAD` | OTA | — | — | Firmware update flow; not an SDK method — see the [protocol doc](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/) |
+| `0xA8`/`0xA9`/`0xAA`/`0xAD` | OTA | — | — | Firmware update flow; not an SDK method — see the [protocol doc](../docs/bluetooth-protocol.md) |
 
 **Examples:**
 ```
@@ -138,7 +138,7 @@ Duty 1-100% maps to raw PWM 265-1023 (fw ≥ 4.15.4) — a perceptual floor that
 
 ## Legacy — On-board Coherence (unused)
 
-The firmware retains an on-board coherence/biofeedback pipeline: `0xB6` pulse-on-beat, `0xB7` PPG program 0-3, `0xB8` coherence difficulty, `0xB9` adaptive pacer, `0xCA` external-IBI injection, `0xCB` HR source, `0xD0` detector reset, `0xE0` coherence tuning. These are functional but no longer used — all processing is app-side now. The Edge↔earclip BLE relay is compile-disabled on stock builds. Full details: [protocol doc §4.7](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/).
+The firmware retains an on-board coherence/biofeedback pipeline: `0xB6` pulse-on-beat, `0xB7` PPG program 0-3, `0xB8` coherence difficulty, `0xB9` adaptive pacer, `0xCA` external-IBI injection, `0xCB` HR source, `0xD0` detector reset, `0xE0` coherence tuning. These are functional but no longer used — all processing is app-side now. The Edge↔earclip BLE relay is compile-disabled on stock builds. Full details: [protocol doc §4.8](../docs/bluetooth-protocol.md#48-legacy-on-board-coherence-pipeline-unused).
 
 ---
 

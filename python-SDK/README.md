@@ -269,7 +269,7 @@ themselves (pulse-on-beat, PPG programs, coherence difficulty, adaptive pacer, a
 related opcodes). Those opcodes still exist and function, but they are legacy — no
 longer used by Narbis apps, which compute everything app-side and drive the lens
 directly. Don't build on them; see the
-[protocol deep-dive](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/)
+[protocol deep-dive](../docs/bluetooth-protocol.md)
 if you need the full story.
 
 ## Troubleshooting
@@ -308,4 +308,4 @@ MIT License - see LICENSE file.
 
 - [API Reference](docs/API_REFERENCE.md) — Python method → wire-byte mapping
 - [Integration Guide](docs/INTEGRATION_GUIDE.md) — OpenBCI, Muse, Polar, LSL
-- [BLE Protocol Deep-dive](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/) — full protocol, OTA, status/PPG characteristics
+- [BLE Protocol Deep-dive](../docs/bluetooth-protocol.md) — full protocol, OTA, status/PPG characteristics

@@ -7,7 +7,7 @@ HRV, GSR, ...) and drives the lens by commanding the firmware's breathe / static
 strobe renderer. All coherence / HRV processing runs app-side.
 
 Requires glasses firmware 4.15.6 or later. Full protocol details:
-[Bluetooth protocol deep-dive](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/).
+[Bluetooth protocol deep-dive](../docs/bluetooth-protocol.md).
 
 ## Installation
 
@@ -53,7 +53,7 @@ blocks the device chooser otherwise.
 - **Single control characteristic:** every command in this SDK goes over one
   characteristic (`0xFF01`), written with response. Other characteristics (OTA data,
   status/notify, PPG stream) exist but are out of SDK scope — see the
-  [protocol doc](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/).
+  [protocol doc](../docs/bluetooth-protocol.md).
 - **No NACKs:** the firmware never rejects a command. Out-of-range arguments are
   silently clamped or dropped on the device, so the SDK validates and clamps
   everything client-side before sending.
@@ -294,7 +294,7 @@ programs, coherence difficulty/tuning, external-IBI injection, HR source, detect
 reset) still exist and function, but are **no longer used by Narbis apps** — all
 biofeedback processing runs app-side now, and this SDK does not wrap them. The
 Edge↔earclip BLE relay is also compile-disabled on stock builds. See
-[protocol doc §4.7](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/)
+[protocol doc §4.8](../docs/bluetooth-protocol.md#48-legacy-on-board-coherence-pipeline-unused)
 for the full story.
 
 ## Migrating from v1

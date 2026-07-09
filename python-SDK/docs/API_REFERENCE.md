@@ -5,7 +5,7 @@
 
 This document maps every Python SDK method to the exact bytes it writes over BLE.
 For the full protocol (OTA, status/notify, PPG stream), see the
-[BLE protocol deep-dive](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/).
+[BLE protocol deep-dive](../../docs/bluetooth-protocol.md).
 
 ---
 
@@ -129,7 +129,7 @@ configure the renderer and set the auto-sleep duration.
 | `0xB5` | Breathe waveform | 0 sine / 1 linear | yes | `start_breathe(waveform=...)` |
 | `0xBA` | Breathe sync | `[cycle_ms:u16 LE][inhale_pct:u8]` | no | `sync_breath` |
 | `0xBF` | Factory reset | arg ignored (send 0) | — | `factory_reset` |
-| `0xA8`/`0xA9`/`0xAA`/`0xAD` | OTA | — | — | not an SDK method — see [protocol doc](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/) |
+| `0xA8`/`0xA9`/`0xAA`/`0xAD` | OTA | — | — | not an SDK method — see [protocol doc](../../docs/bluetooth-protocol.md) |
 
 ---
 
@@ -147,5 +147,5 @@ Duty 1-100% maps to raw 265-1023 — a perceptual floor so 1% is already visible
 `0xD0` detector reset, `0xE0` coherence tuning — the on-board coherence pipeline.
 Functional but unused: all processing is app-side now. The Edge↔earclip BLE relay
 is compile-disabled on stock builds. See
-[protocol doc §4.7](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/)
+[protocol doc §4.8](../../docs/bluetooth-protocol.md#48-legacy-on-board-coherence-pipeline-unused)
 for the full story. The SDK does not expose these.

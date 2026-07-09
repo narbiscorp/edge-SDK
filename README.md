@@ -50,7 +50,7 @@ EDGE glasses feature LCD lenses that dynamically change opacity via Bluetooth. A
 
 | Location | Description |
 |----------|-------------|
-| [Protocol reference](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/) | Published firmware BLE protocol doc (full protocol, OTA, legacy opcodes) |
+| [Protocol reference](docs/bluetooth-protocol.md) | Standalone BLE protocol reference — both devices, all frames, OTA, legacy opcodes (in this repo) |
 | [python-SDK/](python-SDK/) | Python SDK with OpenBCI/Muse/Polar examples |
 | [js-SDK/](js-SDK/) | JavaScript/TypeScript SDK for web apps |
 
@@ -159,7 +159,7 @@ Simple byte-based protocol for direct integration. Service `0x00FF`, control cha
 
 **Important:** every opcode command must be at least 2 bytes — a 1-byte write is always interpreted as the legacy opacity command. Pad argument-less opcodes with `0x00`.
 
-Full protocol (including OTA and legacy opcodes): [Protocol reference](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/) · [API Reference](firmware/API_REFERENCE.md)
+Full protocol (including OTA and legacy opcodes): [Protocol reference](docs/bluetooth-protocol.md) · [API Reference](firmware/API_REFERENCE.md)
 
 ### Connection quirks
 
@@ -209,7 +209,7 @@ For breathing entrainment, prefer the on-board breathe engine (configure, start,
 ## Documentation
 
 - [API Reference](firmware/API_REFERENCE.md) — Complete BLE command reference
-- [Protocol deep-dive](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/) — Full firmware protocol, OTA, legacy opcodes
+- [Protocol deep-dive](docs/bluetooth-protocol.md) — Full firmware protocol, OTA, legacy opcodes
 - [Integration Guide](python-SDK/docs/INTEGRATION_GUIDE.md) — OpenBCI, Muse, Polar, LSL setup
 - [Python SDK Docs](python-SDK/README.md)
 - [JavaScript SDK Docs](js-SDK/README.md)

@@ -11,7 +11,7 @@ setup(
     description="Python SDK for EDGE Smart Glasses",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/",
+    url="https://github.com/narbiscorp/edge-SDK",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",

@@ -458,7 +458,7 @@ command must be **at least 2 bytes** — pad argument-less opcodes to `[opcode, 
 | `[0xBF, 0x00]` | Factory reset |
 
 See the full [Python method → wire mapping](API_REFERENCE.md) and the
-[protocol deep-dive](https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/).
+[protocol deep-dive](../../docs/bluetooth-protocol.md).
 
 ### Example: Node.js with noble
 
@@ -558,7 +558,7 @@ except ConnectionError:
 
 ## Support
 
-- **Protocol deep-dive:** https://narbiscorp.github.io/edge-earclip/docs/bluetooth-protocol.md/
+- **Protocol deep-dive:** ../../docs/bluetooth-protocol.md
 - **Community:** OpenBCI Discord, Muse Community
 
 ---
