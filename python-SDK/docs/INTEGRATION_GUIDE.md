@@ -298,46 +298,156 @@ Lab Streaming Layer (LSL) is the standard for neuroscience data streaming.
 - BCILAB
 - Any LSL-enabled software
 
+### Edge LSL stream conventions
+
+The glasses are an LSL **actuator** (a listener): the bridge consumes a control
+stream and drives the lens, and it announces itself with a status stream.
+Stream metadata follows the [XDF conventions](https://github.com/sccn/xdf/wiki/Meta-Data).
+
+#### Control stream (what the bridge listens for)
+
+| Property | Convention |
+|----------|------------|
+| Name | `GlassesControl` (default; override via constructor arg / CLI) |
+| Type | `Control` |
+| Channel | The channel labeled `Opacity` (case-insensitive). A single-channel stream is used regardless of label; a multi-channel stream with no matching label falls back to channel 0 with a warning |
+| Unit / values | `percent`: float 0–100 (fractional values supported). `<unit>normalized</unit>`: 0–1, rescaled to percent |
+| Custom ranges | Senders with fixed output ranges (e.g. 0–255) can be adapted with the bridge's `expected_range=(lo, hi)` parameter. Values are **always clamped to 0–100** before writing to the glasses |
+| Multiple matches | Connect to the most recently created stream (highest `created_at()`), not the first resolved |
+
+Control values drive the lens with `set_static()` — decimated to **≤ 12 Hz**
+(the bridge loop runs at 10 Hz and keeps only the newest queued sample), with
+unchanged values coalesced so no redundant BLE writes are sent.
+
+#### Status stream (what the bridge emits)
+
+LSL has no sink-discovery mechanism — outlets announce themselves, inlets
+don't. The status stream is how users and sender clients (BCI systems,
+experiment scripts) discover that an Edge is on the network, which stream name
+it is watching, and what value range it expects.
+
+| Property | Value |
+|----------|-------|
+| Name | `NarbisEdgeStatus` |
+| Type | `ListenerStatus` — the stream advertises that a listener is on the network and carries its status. Not `Markers`, which is reserved by convention for single-channel / string / irregular-rate streams and many tools assume that shape |
+| Format | 3 channels, float32, nominal_srate 1.0 (pushed ~1 Hz) |
+
+| Channel | Unit | Meaning |
+|---------|------|---------|
+| `Opacity` | percent | Last commanded lens duty |
+| `Battery` | percent | **Always NaN on current hardware** — the Edge exposes no battery readout over BLE. NaN = unavailable; the channel is kept for spec stability |
+| `ClientConnected` | binary | 1.0 while the bridge holds a live BLE connection to the glasses |
+
+The outlet's `desc()` XML metadata is the normative spec. If the control
+stream name or expected range is overridden, the emitted `<expects>` block
+must reflect the override.
+
+```xml
+<channels>
+  <channel><label>Opacity</label><unit>percent</unit></channel>
+  <channel><label>Battery</label><unit>percent</unit></channel>
+  <channel><label>ClientConnected</label><unit>binary</unit></channel>
+</channels>
+<expects>                     <!-- what this listener is watching the network for -->
+  <stream_name>GlassesControl</stream_name>
+  <type>Control</type>
+  <channels>                  <!-- expected channels; if the sender omits metadata these are the implied defaults; extra channels are ignored -->
+    <channel>
+      <label>Opacity</label>
+      <unit>percent</unit>
+      <range><min>0</min><max>100</max></range>
+    </channel>
+  </channels>
+</expects>
+<acquisition>
+  <manufacturer>Narbis</manufacturer>
+  <model>Narbis Edge</model>
+  <serial_number></serial_number>       <!-- not exposed over BLE -->
+  <hardware_version></hardware_version>
+  <firmware_version></firmware_version> <!-- Edge has no DIS; not readable over BLE -->
+  <bridge_version>2.0.0</bridge_version>
+</acquisition>
+```
+
+#### Security note
+
+LSL traffic is neither encrypted nor authenticated. The bridge deliberately
+maps only a numeric control channel to lens opacity; it does not expose
+configuration or destructive operations (sleep, factory reset, OTA) to the
+network. If you build a string-command control stream on top, whitelist safe
+commands only.
+
 ### EDGE Glasses as LSL Device
+
+Condensed from [examples/lsl_integration.py](../examples/lsl_integration.py),
+which adds channel-label selection and unit/range handling:
 
 ```python
 from pylsl import StreamInfo, StreamOutlet, StreamInlet, resolve_stream
 from edge_glasses import Glasses
 import asyncio
+import math
+import time
 
 class GlassesLSLBridge:
-    def __init__(self):
+    def __init__(self, control_stream='GlassesControl'):
+        self.control_stream = control_stream
         self.glasses = None
         self.outlet = None
         self.inlet = None
+        self.opacity = 0.0
 
     async def setup(self):
         # Connect glasses
         self.glasses = Glasses()
         await self.glasses.connect()
 
-        # Create outlet (publish state)
-        info = StreamInfo('EDGE_Glasses', 'Markers', 1, 10, 'float32', 'edge001')
+        # Status outlet: announces this listener + its status (not 'Markers')
+        info = StreamInfo('NarbisEdgeStatus', 'ListenerStatus', 3, 1.0,
+                          'float32', 'narbis_edge_bridge')
+        channels = info.desc().append_child('channels')
+        for label, unit in (('Opacity', 'percent'), ('Battery', 'percent'),
+                            ('ClientConnected', 'binary')):
+            ch = channels.append_child('channel')
+            ch.append_child_value('label', label)
+            ch.append_child_value('unit', unit)
+        expects = info.desc().append_child('expects')  # see spec block above
+        expects.append_child_value('stream_name', self.control_stream)
+        expects.append_child_value('type', 'Control')
         self.outlet = StreamOutlet(info)
 
-        # Find control stream (receive commands)
-        streams = resolve_stream('name', 'GlassesControl', timeout=2)
+        # Control inlet: most recently created match wins
+        streams = resolve_stream('name', self.control_stream, timeout=2)
         if streams:
-            self.inlet = StreamInlet(streams[0])
+            self.inlet = StreamInlet(max(streams, key=lambda s: s.created_at()))
 
     async def run(self):
+        last_written = None
+        last_status = 0.0
         while True:
-            # Check for incoming commands
-            if self.inlet:
+            # Drain queued control samples, keep the newest (decimation)
+            latest = None
+            while self.inlet:
                 sample, _ = self.inlet.pull_sample(timeout=0.0)
-                if sample:
-                    opacity = int(sample[0] * 255)
-                    await self.glasses.set_opacity(opacity)
+                if sample is None:
+                    break
+                latest = sample[0]
 
-            # Publish current state
-            # self.outlet.push_sample([current_opacity])
+            if latest is not None:
+                duty = max(0.0, min(100.0, float(latest)))  # clamp to percent
+                if int(round(duty)) != last_written:        # coalesce
+                    last_written = int(round(duty))
+                    await self.glasses.set_static(last_written)
+                    self.opacity = float(last_written)
 
-            await asyncio.sleep(0.1)
+            # Status heartbeat at ~1 Hz: [Opacity, Battery=NaN, ClientConnected]
+            now = time.time()
+            if now - last_status >= 1.0:
+                connected = 1.0 if self.glasses.is_connected else 0.0
+                self.outlet.push_sample([self.opacity, math.nan, connected])
+                last_status = now
+
+            await asyncio.sleep(0.1)  # 10 Hz; lens writes stay under 12 Hz cap
 ```
 
 ---
