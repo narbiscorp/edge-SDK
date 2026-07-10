@@ -41,7 +41,7 @@ sends a single byte.
 
 | Method | Wire bytes | Notes |
 |--------|-----------|-------|
-| `set_opacity(value)` | `[value]` (1 byte, 0-255) | 0-255 → 0-100% static duty; stops current mode; not persisted. Streamable up to ~20 Hz. |
+| `set_opacity(value)` | `[value]` (1 byte, 0-255) | 0-255 → 0-100% static duty; stops current mode; not persisted. Streamable at ~12 Hz (recommended, production-proven); ~20 Hz is only a tolerated ceiling. |
 | `clear()` | `[0x00]` | Fully transparent |
 | `dark()` | `[0xFF]` | Fully opaque |
 

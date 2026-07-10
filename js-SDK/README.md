@@ -81,7 +81,7 @@ import { Glasses } from 'edge-glasses';
 const glasses = new Glasses();
 await glasses.connect();
 
-// Simple opacity control (legacy 1-byte write; fine to stream at <= 20 Hz)
+// Simple opacity control (legacy 1-byte write; stream at ~12 Hz recommended, <= 20 Hz tolerated)
 await glasses.clear();           // Fully transparent
 await glasses.setOpacity(128);   // 50% dark
 await glasses.dark();            // Fully opaque
@@ -162,7 +162,7 @@ await glasses.startBreathe({ bpm: 5 });
 
 ### Real-time Biofeedback
 
-Map a continuous signal to lens opacity at up to ~20 Hz:
+Map a continuous signal to lens opacity at ~12 Hz (production-proven rate; ~20 Hz is the tolerated ceiling):
 
 ```typescript
 // Update opacity in real-time (e.g., from sensor data)
@@ -172,7 +172,7 @@ function updateFromSensor(value: number) {
   glasses.setOpacity(opacity);
 }
 
-// Example: 20 Hz update loop
+// Example: 12 Hz update loop
 setInterval(() => {
   const sensorValue = getSensorReading();  // Your function
   updateFromSensor(sensorValue);
@@ -248,7 +248,7 @@ function GlassesControl() {
 
 | Method | Description |
 |--------|-------------|
-| `setOpacity(0-255)` | Static lens opacity (legacy 1-byte write; streamable ≤ 20 Hz) |
+| `setOpacity(0-255)` | Static lens opacity (legacy 1-byte write; stream at ~12 Hz, ≤ 20 Hz ceiling) |
 | `clear()` | Fully transparent |
 | `dark()` | Fully opaque |
 | `setStatic(0-100)` | Static mode at duty cycle % |
@@ -258,7 +258,7 @@ function GlassesControl() {
 
 | Method | Description |
 |--------|-------------|
-| `setBrightness(0-100)` | Max lens brightness % |
+| `setBrightness(0-100)` | Lens level / breathe depth % (persisted; same firmware variable `setStatic` writes — not a ceiling) |
 | `setDuration(1-60)` | Session length in minutes (auto-sleep at end) |
 | `setStrobeFrequency(1-50)` | Strobe frequency in Hz |
 | `setStrobeDuty(10-90)` | Strobe dark-phase duty % |

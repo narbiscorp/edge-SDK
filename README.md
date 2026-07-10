@@ -31,7 +31,7 @@ EDGE glasses feature LCD lenses that dynamically change opacity via Bluetooth. A
 ### Why EDGE?
 
 - **Open Protocol** — Simple BLE API, no vendor lock-in
-- **Low Latency** — 20 Hz update rate for real-time feedback
+- **Low Latency** — ~12 Hz update rate (production-proven) for real-time feedback
 - **Cross-Platform SDKs** — Python for research, JS for web apps
 - **Sensor Agnostic** — Works with any biosignal source via LSL/brainflow
 - **Research Ready** — Compatible with OpenBCI, Muse, Polar, and lab equipment
@@ -141,7 +141,7 @@ Simple byte-based protocol for direct integration. Service `0x00FF`, control cha
 | Command | Bytes | Description |
 |---------|-------|-------------|
 | Opacity (legacy) | `[0x00-0xFF]` | Single byte = lens opacity 0-255; stops current mode |
-| Brightness | `[0xA2, pct]` | Max brightness 0-100% (persisted) |
+| Brightness | `[0xA2, pct]` | Level 0-100% (persisted) — writes the same variable as `0xA5` and sets breathe depth; not a max/ceiling |
 | Duration | `[0xA4, minutes]` | Session length 1-60 min, auto-sleep at end (persisted) |
 | Static | `[0xA5, duty]` | Static mode at duty 0-100% |
 | Start strobe | `[0xA6, 0x00]` | Start strobe mode |
@@ -195,13 +195,13 @@ Presets are fixed-parameter: the firmware no longer ramps strobe frequency or gr
 
 ### Real-time control
 
-Update opacity for smooth neurofeedback — keep it at or below 20 Hz:
+Update opacity for smooth neurofeedback — at ~12 Hz (the production-proven rate; ~20 Hz is only a tolerated ceiling):
 
 ```python
 while True:
     alpha = get_eeg_alpha()  # Your processing
     await glasses.set_opacity(int(alpha * 255))
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(1 / 12)  # ~12 Hz
 ```
 
 For breathing entrainment, prefer the on-board breathe engine (configure, start, optionally `syncBreath()` once per breath at the cycle boundary) over streaming per-tick opacity.

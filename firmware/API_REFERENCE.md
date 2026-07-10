@@ -42,7 +42,7 @@ Any single-byte write sets lens opacity directly:
 
 **Mapping:** Linear `0-255` → `0-100%` static duty.
 
-**Behavior:** Stops any running mode (breathe/strobe/static) and holds the opacity until the next command. Not persisted. Safe to stream at up to ~20 Hz for continuous feedback.
+**Behavior:** Stops any running mode (breathe/strobe/static) and holds the opacity until the next command. Not persisted. Streamable for continuous feedback at **~12 Hz (recommended, production-proven)**; the link tolerates up to ~20 Hz only as a ceiling.
 
 ---
 
@@ -51,7 +51,7 @@ Any single-byte write sets lens opacity directly:
 | Opcode | Name | Arg | Persisted (NVS) | Notes |
 |--------|------|-----|-----------------|-------|
 | *(1 byte)* | Legacy opacity | 0-255 → 0-100% static duty | no | Stops current mode |
-| `0xA2` | Brightness | 0-100 % | yes | Global ceiling; takes effect immediately, does not change mode |
+| `0xA2` | Brightness | 0-100 % | yes | Sets + persists the SAME `brightness` variable `0xA5` writes — NOT a ceiling clamping `0xA5` (a later `0xA5` simply overwrites it); takes effect immediately; does not change mode; also serves as the breathe depth/amplitude (see protocol doc §4.6.1) |
 | `0xA4` | Session duration | 1-60 min | yes | Device auto-sleeps when the session ends (default 30 min; persisted; timer runs from device wake — see the protocol doc's session-auto-sleep note) |
 | `0xA5` | Static mode + duty | 0-100 % | no | Enters static mode at the given duty |
 | `0xA6` | Start strobe mode | ignored (send `0x00`) | no | Uses stored frequency/duty (`0xAB`/`0xAC`) |
@@ -88,8 +88,8 @@ Phase-locks the breathe engine to an external pacer. 4 bytes on the wire:
 | Byte | Value |
 |------|-------|
 | 0 | `0xBA` |
-| 1-2 | `cycle_ms` (u16, little-endian) — exact breath cycle length in ms |
-| 3 | `inhale_pct` (u8) — inhale ratio 10-90 % |
+| 1-2 | `cycle_ms` (u16, little-endian) — exact breath cycle length in ms; valid 2000-30000, silently clamped |
+| 3 | `inhale_pct` (u8) — inhale ratio 10-90 %, silently clamped |
 
 **Behavior:** restarts the breathe cosine at the instant of the write and sets the exact cycle length in milliseconds — this is the only way to get fractional breathing rates (`0xB1` is integer-BPM only).
 

@@ -253,7 +253,7 @@ class Glasses:
         write as a direct opacity command (0-255 -> 0-100% static duty).
         Stops whatever mode is currently running.
 
-        Fine to stream at up to ~20 Hz for continuous biofeedback signals.
+        Stream at ~12 Hz for continuous biofeedback (~20 Hz is the tolerated ceiling).
 
         Args:
             value: Opacity 0-255 (0=clear, 255=full dark)
@@ -280,9 +280,12 @@ class Glasses:
 
     async def set_brightness(self, percent: int) -> None:
         """
-        Set maximum brightness level (0xA2)
+        Set the lens level / breathe depth (0xA2)
 
         Persisted in NVS across power cycles. Does not change mode.
+        Writes the SAME firmware variable as set_static() -- it is not a
+        ceiling that clamps later set_static() writes; a later set_static()
+        simply overwrites it.
 
         Args:
             percent: Brightness 0-100%

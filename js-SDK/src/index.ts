@@ -230,7 +230,7 @@ export class Glasses {
    *
    * This is the ONE command that is intentionally a single byte on the
    * wire - the firmware treats any 1-byte write as opacity. Fine to
-   * stream at up to ~20 Hz for continuous biofeedback.
+   * stream at ~12 Hz for continuous biofeedback (~20 Hz is the tolerated ceiling).
    *
    * Value is clamped to 0-255 client-side (firmware never NACKs).
    *
@@ -275,7 +275,9 @@ export class Glasses {
   // -------------------------------------------------------------------------
 
   /**
-   * Set maximum lens brightness (opcode 0xA2). Persisted in NVS.
+   * Set the lens level / breathe depth (opcode 0xA2). Persisted in NVS.
+   * Writes the SAME firmware variable as setStatic() — it is not a ceiling
+   * that clamps later setStatic() writes; a later setStatic() overwrites it.
    *
    * Clamped to 0-100 client-side (firmware never NACKs).
    *

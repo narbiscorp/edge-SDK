@@ -34,7 +34,7 @@ EDGE Glasses can be controlled from any system that can send BLE commands. The S
 
 | Your signal | Drive the glasses with |
 |-------------|------------------------|
-| Continuous scalar (EEG alpha, GSR, an HRV score…) | `set_opacity()` streamed at ≤ 20 Hz, or `set_static()` for slower updates |
+| Continuous scalar (EEG alpha, GSR, an HRV score…) | `set_opacity()` streamed at ~12 Hz (≤ 20 Hz ceiling), or `set_static()` for slower updates |
 | Breathing entrainment / pacing | The **on-board breathe engine** (`start_breathe()`), optionally phase-locked with `sync_breath()` once per breath at the cycle boundary. Do **not** stream per-tick opacity to draw a breathing waveform. |
 | HRV coherence training | Compute metrics **app-side** (e.g. RMSSD from Polar RR intervals), then map the result to `set_opacity()` or use it to pace `sync_breath()` |
 
@@ -108,7 +108,7 @@ async def openbci_feedback():
                 opacity = int(normalized * 255)
                 await glasses.set_opacity(opacity)
 
-            await asyncio.sleep(0.1)  # 10 Hz — stay at or below 20 Hz
+            await asyncio.sleep(0.1)  # 10 Hz — ~12 Hz recommended, 20 Hz ceiling
 
     finally:
         board.stop_stream()
@@ -622,7 +622,7 @@ await characteristic.WriteValueWithResponseAsync(new byte[] { 0xB0, 0x00 });
 
 ### Continuous signals vs breathing entrainment
 - **Continuous signals** (EEG bands, GSR, an app-computed HRV score): map to
-  `set_opacity()` at ≤ 20 Hz, or `set_static()` for coarser updates.
+  `set_opacity()` at ~12 Hz (≤ 20 Hz ceiling), or `set_static()` for coarser updates.
 - **Breathing entrainment**: configure and start the on-board breathe engine
   (`start_breathe()`), then optionally phase-lock with `sync_breath()` once per
   breath, sent exactly at the cycle boundary. Do NOT stream per-tick opacity to
@@ -632,7 +632,7 @@ await characteristic.WriteValueWithResponseAsync(new byte[] { 0xB0, 0x00 });
   drive the lens with the result.
 
 ### Update Rate
-- **Maximum:** 20 Hz (50 ms between opacity writes)
+- **Recommended:** ~12 Hz (production-proven); **maximum:** 20 Hz (50 ms between opacity writes)
 - **Recommended:** 10 Hz for smooth visual feedback
 - `sync_breath` is once per breath (every 2-15 s), not a streaming command
 

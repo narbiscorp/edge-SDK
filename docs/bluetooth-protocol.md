@@ -57,7 +57,7 @@ async def run(get_signal):                    # get_signal() → 0.0..1.0
         while True:
             duty = round(get_signal() * 100)  # 0..1 → 0..100
             if duty != last:                  # coalesce: skip unchanged values
-                await client.write_gatt_char(CTRL, bytes([0xA5, duty]), response=False)
+                await client.write_gatt_char(CTRL, bytes([0xA5, duty]), response=True)  # 0xFF01 is write-with-response only
                 last = duty
             await asyncio.sleep(1 / 12)       # ≤ 12 Hz; the await also keeps writes serialized
 ```
@@ -75,7 +75,8 @@ setInterval(async () => {
   const duty = Math.round(getSignal() * 100);                     // 0..1 → 0..100
   if (duty === last || busy) return;                              // coalesce; one write in flight
   busy = true; last = duty;
-  try { await ctrl.writeValueWithoutResponse(new Uint8Array([0xA5, duty])); }
+  try { await ctrl.writeValueWithResponse(new Uint8Array([0xA5, duty])); }  // 0xFF01 is write-with-response only (§7.1)
+  catch { last = -1; }  // failed write: reset the coalesce key so the next frame retries (matches streamLensDuty)
   finally { busy = false; }
 }, 1000 / 12);
 ```
@@ -84,7 +85,7 @@ Read before shipping:
 
 - the **≥ 2-byte write rule** — a 1-byte write is the legacy opacity command ([§4.3](#43-control-characteristic-0xff01--command-opcodes));
 - **session auto-sleep** — the glasses deep-sleep when the session timer expires ([§4.1.2](#412-session-auto-sleep--the-0xa4-timer));
-- **reconnect / re-assert** — subscriptions and lens state don't survive a disconnect ([§2.5](#25-reconnection)).
+- **reconnect / re-assert** — subscriptions don't survive a disconnect, and lens state does (the lens holds its last tint until session expiry); re-subscribe and re-send your lens setup ([§2.5](#25-reconnection)).
 
 ---
 
@@ -164,7 +165,7 @@ await client.start_notify(IBI_UUID, on_ibi)
 await client.write_gatt_char(EDGE_CTRL, bytes([0xA2, 80]), response=True)  # brightness 80%
 ```
 
-Use `response=True` for all control writes (ordering + back-pressure); `response=False` only for high-rate paths like OTA data chunks ([§6](#6-ota--shared-between-both-devices)).
+Use `response=True` for all control writes (ordering + back-pressure); `response=False` is reserved for the `0xFF02` OTA data chunks — the only characteristic that exposes write-without-response ([§6](#6-ota--shared-between-both-devices)).
 
 ### 2.2 JavaScript (Web Bluetooth)
 
@@ -226,18 +227,20 @@ Both devices request an ATT MTU of **247**.
 Both devices auto-resume advertising on disconnect — reconnect with exponential backoff (1, 2, 4, 8, 16, 30 s).
 
 > **Edge-only quirk:** the glasses tear down their BLE stack entirely after **2 minutes** with no client connected (`BLE_IDLE_TIMEOUT_MS = 120000`) — and the teardown fully powers down the radio. The user has to wake the device (magnet tap on the temple) to start advertising again. Surface this in your UX ("tap your glasses to wake them") rather than silently retrying forever. In Python, re-**scan** after a failed reconnect rather than reusing a cached `BLEDevice` ([§7.2](#72-windows--winrt--python-bleak-gotchas)).
+>
+> ⚠️ **Instruct users to tap only after the Edge is confirmed absent from scans** (after the retry guidance in [§7.2](#72-windows--winrt--python-bleak-gotchas)). Magnet gestures stay live while a client is connected ([§4.1.1](#411-standalone-programs--magnet-gestures)), so a tap during a transient link drop — or while another client holds the connection — cycles the running program, and a ≥ 5 s hold deep-sleeps the device.
 
 After every reconnect:
 
 - **CCCD subscriptions are per-connection** — re-enable notify on `0xFF03` (and any other notify characteristic you use) after each reconnect.
-- **Non-persisted Edge state is lost on disconnect** — lens mode, static duty/opacity, and `0xBA` sync are gone; re-send your full lens setup. NVS-persisted params (`0xA2`, `0xA4`, `0xAB`, `0xAC`, `0xB1`–`0xB5`, `0xB8`, `0xB9`, `0xE0`) survive.
+- **CCCD subscriptions are lost on disconnect; lens state is NOT — the lens FREEZES at its last commanded output.** The Edge's disconnect handler and idle radio teardown clear only connection/notification state: the lens keeps rendering its last commanded mode and duty across a disconnect, so a crashed app leaves the last tint in place (e.g. fully dark at duty 100) until reconnect, a magnet action, or session-expiry deep sleep (default 30 min, `0xA4`-configurable). Re-send your full lens setup on every reconnect because the device state is UNKNOWN (frozen), not reset — and before an *intentional* disconnect send `[0xA5, 0]` (static mode, 0 % = clear) or `[0xA7, 0x00]` (immediate sleep, clears the lens) so the wearer is not left dark. (`0xBA` breathe sync is the exception: it is not cleared by disconnect either but self-expires ~2 breath cycles after the last sync frame — time-based, connected or not — after which breathe falls back to the local integer-`0xB1` timing.) NVS-persisted params (`0xA2`, `0xA4`, `0xAB`, `0xAC`, `0xB1`–`0xB5`, `0xB8`, `0xB9`, `0xE0`) additionally survive reboots.
 - **No application keep-alive is needed while connected** — the 2-minute teardown applies only when no client is connected; the idle deadline is cleared on connect.
 
 ---
 
 ## 3. Earclip BLE — full reference
 
-The earclip exposes four services: one custom Narbis service with nine characteristics, and three standard SIG services (Heart Rate, Battery, Device Information). OTA is covered separately in [§6](#6-ota--shared-between-both-devices). SDK users can connect to the earclip directly from Python or JS — no glasses required.
+The earclip exposes four services: one custom Narbis service with ten characteristics, and three standard SIG services (Heart Rate, Battery, Device Information). OTA is covered separately in [§6](#6-ota--shared-between-both-devices). SDK users can connect to the earclip directly from Python or JS — no glasses required.
 
 All multi-byte fields are **little-endian on the wire**. Structs are byte-packed (no padding).
 
@@ -254,10 +257,13 @@ The single best filter for "this is an earclip" is the presence of this 128-bit 
 | CONFIG | `553abc98-6406-4e37-b9fd-34df85b2b6c1` | read + notify | **74 B** | Config + 16-bit CRC (config v4; was 50 B in v3, 58 B before that) |
 | CONFIG_WRITE | `129fbe56-cbd6-4f52-957b-d80834d6abf3` | write | **74 B** | Config + 16-bit CRC |
 | MODE | `71db6de8-5bff-480f-8db1-0d01c90d17d0` | write | **2 B** | Quick mode swap (legacy 3-B form still accepted, first byte ignored) |
-| PEER_ROLE | `e987719a-26a6-48d4-b8e9-128994e62e6c` | write | 1 B | Central announces its role; earclip picks the conn-update profile. See [§3.1.8](#318-peer_role--e987719a) |
+| PEER_ROLE | `e987719a-26a6-48d4-b8e9-128994e62e6c` | write | 1 B | Central announces its role; earclip picks the conn-update profile. See [§3.1.8](#318-peer_role--e987719a-) |
+| FACTORY_RESET | `c0e221b1-1633-0f9d-364a-7e47a8d9c411` | write | 4 B | **Destructive** — see warning below |
 | DIAGNOSTICS | `31d99572-bf8a-4658-828e-4f7c138ca722` | read\* + notify | variable | Optional debug stream |
 
 > \* IBI, SQI, RAW_PPG, BATTERY, and DIAGNOSTICS are registered read + notify, but a READ returns a **0-byte value** — don't poll them; subscribe. Only CONFIG returns data on read.
+
+> ⚠️ **FACTORY_RESET is destructive — firmware-internal, do not touch in normal integrations.** Writing the exact 4 ASCII bytes `NUKE` (`0x4E 0x55 0x4B 0x45`, i.e. u32 LE `0x454B554E`) erases the earclip's entire persisted config namespace in NVS and immediately reverts the running configuration to firmware defaults (a CONFIG notification with the default snapshot follows) — the effect is immediate, not on next boot. Any other write length is rejected with ATT error `0x0D` (invalid attribute value length); a 4-byte write with the wrong magic is rejected with `0x13` (value not allowed).
 
 #### 3.1.1 IBI — `78ef492f-…`
 
@@ -452,7 +458,7 @@ A 1-byte write characteristic. Each connecting central writes its role on connec
 
 | Value | Symbol | Profile applied |
 |---|---|---|
-| `0` | UNKNOWN | (no change — earclip uses its compiled default) |
+| `0` | UNKNOWN | `BATCHED` — treated the same as GLASSES. Writing 0 is **not** a no-op: it immediately applies the BATCHED conn-update profile (50–100 ms interval, latency 4) to that connection, so a client that previously wrote 1 (LOW_LATENCY) gets demoted. Never write 0 to "keep" an existing profile. |
 | `1` | DASHBOARD | `LOW_LATENCY` — 15–30 ms interval, latency 0, notify every beat. **Use this from your app.** |
 | `2` | GLASSES | `BATCHED` — 50–100 ms interval, latency 4, batched notifies. The Edge uses this when it connects as a central. |
 
@@ -496,11 +502,16 @@ Stream IDs:
 0x08  AGC_EVENT        per-AGC-step LED current changes
 0x10  FIFO_OCCUP       MAX3010x FIFO occupancy at each drain
 0x20  DETECTOR_STATS   v4 — adaptive-detector snapshot per accepted beat:
-                       NCC ×1000, adaptive-α ×1000, Kalman x̂ (ms), Kalman R (ms²),
-                       beats_learned, ncc_rejects, kalman_rejects, watchdog_resets,
-                       beats_in_template, detector_mode. Only meaningful when
-                       config_version 4 and detector_mode = ADAPTIVE (1) — silent
-                       under FIXED.
+                       timestamp_ms (u32 LE) first, then NCC ×1000 (i16),
+                       adaptive-α ×1000 (u16), Kalman x̂ ms (u16), Kalman R ms² (u16),
+                       beats_learned (u32), ncc_rejects (u16), kalman_rejects (u16),
+                       watchdog_resets (u16), beats_in_template (u8),
+                       detector_mode (u8); all LE. Only meaningful when
+                       config_version 4 and detector_mode = ADAPTIVE (1) — under
+                       FIXED the stream still emits one record per accepted
+                       (passthrough) beat whenever mask bit 0x20 is set, but the
+                       adaptive fields (NCC, α, Kalman, counters) are
+                       stale/meaningless.
 ```
 
 Skip this characteristic unless you're building a tuning UI.
@@ -584,7 +595,7 @@ function parseHeartRateMeasurement(dv /* DataView */) {
 |---|---|---|---|
 | Battery Level | `0x2A19` | read + notify | Single `u8` percent (0–100) |
 
-If you want voltage and charging state, prefer the custom Narbis BATTERY characteristic ([§3.1.4](#314-battery--b59d3ba1)).
+If you want voltage and charging state, prefer the custom Narbis BATTERY characteristic ([§3.1.4](#314-battery--b59d3ba1-)).
 
 ### 3.4 Device Information Service — `0x180A`
 
@@ -598,7 +609,7 @@ All read-only strings.
 | Firmware Revision | `0x2A26` | populated from app descriptor at boot, e.g. `1.0.3` |
 | Serial Number | `0x2A25` | BLE MAC in hex, e.g. `A1B2C3D4E5F6` |
 
-Read the firmware revision before doing OTA so you can decide whether the user is already up-to-date. (Note: the **Edge does not expose DIS** — there is no BLE firmware-version readback on the glasses; see [§4.6.7](#467-backward-compatibility--version).)
+Read the firmware revision before doing OTA so you can decide whether the user is already up-to-date. (Note: the **Edge does not expose DIS** and has no version characteristic — the only version readback on the glasses is the informal `0xF1` hello line emitted on `0xFF03` subscribe, fw ≥ 4.12.1 ([§4.4.2](#442-log-string-0xf1--variable)); see [§4.6.7](#467-backward-compatibility--version).)
 
 ### 3.5 The 2-axis mode model
 
@@ -656,7 +667,7 @@ The full `narbis_runtime_config_t` is **72 bytes packed** (`config_version 4`), 
 | 28 | 2 | `elgendi_w2_ms` | 667 | u16 LE | Beat window; must be > w1 |
 | 30 | 2 | `elgendi_beta_x1000` | 20 | u16 LE (×1000) | Offset coefficient, default 0.020 |
 | 32 | 2 | `sqi_threshold_x100` | 50 | u16 LE (×100) | Min SQI to emit IBI |
-| 34 | 2 | `ibi_min_ms` | 300 | u16 LE | Validator floor (~200 BPM); also Elgendi refractory |
+| 34 | 2 | `ibi_min_ms` | 300 | u16 LE, ≥ 1 (non-zero) | Validator floor (~200 BPM); also Elgendi refractory; must be < `ibi_max_ms` |
 | 36 | 2 | `ibi_max_ms` | 2000 | u16 LE | Validator ceiling (~30 BPM) |
 | 38 | 1 | `ibi_max_delta_pct` | 30 | 0–100 | Continuity threshold |
 | 39 | 1 | `ble_profile` | 0 (BATCHED) | 0, 1 | Global default; PEER_ROLE overrides per-connection |
@@ -672,22 +683,22 @@ The full `narbis_runtime_config_t` is **72 bytes packed** (`config_version 4`), 
 | 50 | 1 | `template_warmup_beats` | 4 | u8 | Beats before NCC gate activates |
 | 51 | 1 | `kalman_warmup_beats` | 5 | u8 | Beats before Kalman gate activates |
 | 52 | 2 | `template_window_ms` | 200 | u16 LE | Matched-filter window length, ms |
-| 54 | 2 | `ncc_min_x1000` | 500 | u16 LE (×1000) | NCC admit threshold (0.500 default) |
-| 56 | 2 | `ncc_learn_min_x1000` | 750 | u16 LE (×1000) | NCC template-learning threshold (must be ≥ `ncc_min_x1000`) |
+| 54 | 2 | `ncc_min_x1000` | 500 | 0–1000 (×1000) | NCC admit threshold (0.500 default) |
+| 56 | 2 | `ncc_learn_min_x1000` | 750 | 0–1000 (×1000) | NCC template-learning threshold (must be ≥ `ncc_min_x1000`) |
 | 58 | 2 | `kalman_q_ms2` | 400 | u16 LE | Process noise variance, ms² |
 | 60 | 2 | `kalman_r_ms2` | 2500 | u16 LE | Measurement noise baseline, ms² |
 | 62 | 1 | `kalman_sigma_x10` | 30 | u8 (×10) | IBI gate width, σ ×10 (3.0σ default) |
 | 63 | 1 | `watchdog_max_consec_rejects` | 5 | u8 | Consecutive rejects → full detector reset |
 | 64 | 2 | `watchdog_silence_ms` | 4000 | u16 LE | Silence → full detector reset, ms |
-| 66 | 2 | `alpha_min_x1000` | 10 | u16 LE (×1000) | Adaptive-α floor (0.010 default) |
-| 68 | 2 | `alpha_max_x1000` | 500 | u16 LE (×1000) | Adaptive-α ceiling (0.500 default; must be > `alpha_min_x1000`) |
+| 66 | 2 | `alpha_min_x1000` | 10 | 1–999 (×1000), non-zero | Adaptive-α floor (0.010 default) |
+| 68 | 2 | `alpha_max_x1000` | 500 | ≤ 1000 (×1000) | Adaptive-α ceiling (0.500 default; must be > `alpha_min_x1000`) |
 | 70 | 1 | `elgendi_loose_mode` | 0 | 0 / 1 | Relax Elgendi β and NCC admit by 50% for motion tolerance. Repurposed from the former `agc_adaptive_step` byte (same offset, same range) |
 | 71 | 1 | `refractory_ibi_pct` | 60 | 0–100 | Refractory window upper bound, % of last IBI |
 | **72** | 2 | **CRC16** | — | u16 LE | CRC-16-CCITT-FALSE over bytes 0..71 |
 
 > **Removed in v3 (do not look for them):** `transport_mode` (offset 39 in the old layout), `partner_mac[6]` (offset 44), `espnow_channel` (offset 50). All ESP-NOW state is gone — the earclip↔Edge link is BLE only.
 
-> **Validation rules the firmware enforces.** Writes are rejected if any of these fail: `sample_rate_hz` is one of {50, 100, 200, 400}; LED currents ≤ 510; `bandpass_low < bandpass_high`; `elgendi_w1 < elgendi_w2`; `ibi_min < ibi_max`; mode enums in range; `battery_low_mv` 2800–4200; `detector_mode` is `FIXED (0)` or `ADAPTIVE (1)`; `ncc_min_x1000 ≤ ncc_learn_min_x1000`; `alpha_min_x1000 < alpha_max_x1000`; `template_max_beats` 1–16; `template_window_ms` 80–1000; `kalman_sigma_x10` 5–100; `watchdog_silence_ms` 500–60000; and non-zero: `kalman_q_ms2`, `kalman_r_ms2`, `watchdog_max_consec_rejects`, `bandpass_low`, `elgendi_w1`, `elgendi_w2`.
+> **Validation rules the firmware enforces.** Writes are rejected if any of these fail: `sample_rate_hz` is one of {50, 100, 200, 400}; LED currents ≤ 510; `bandpass_low < bandpass_high`; `elgendi_w1 < elgendi_w2`; `ibi_min < ibi_max`; mode enums in range; `battery_low_mv` 2800–4200; `detector_mode` is `FIXED (0)` or `ADAPTIVE (1)`; `ncc_min_x1000 ≤ ncc_learn_min_x1000`; `ncc_min_x1000 ≤ 1000` and `ncc_learn_min_x1000 ≤ 1000`; `alpha_min_x1000 < alpha_max_x1000`; `alpha_max_x1000 ≤ 1000`; `template_max_beats` 1–16; `template_window_ms` 80–1000; `kalman_sigma_x10` 5–100; `watchdog_silence_ms` 500–60000; and non-zero: `kalman_q_ms2`, `kalman_r_ms2`, `watchdog_max_consec_rejects`, `bandpass_low`, `elgendi_w1`, `elgendi_w2`, `alpha_min_x1000`, `ibi_min_ms`.
 
 Full Python and JS serializers — including the CRC-16-CCITT-FALSE implementation — are in [§5](#5-configuring-the-earclip).
 
@@ -697,7 +708,7 @@ Full Python and JS serializers — including the CRC-16-CCITT-FALSE implementati
 
 The Edge advertises one custom service, **`0x00FF`**, with four characteristics (`0xFF01`–`0xFF04`). There are no standard SIG services. The device does not advertise its service UUID in the GAP payload reliably — filter by name `Narbis_Edge`.
 
-> **No power or version telemetry.** The Edge exposes **no Battery Service and no DIS** — glasses battery level and firmware version are not readable over BLE. (The `0xF8` battery frame on `0xFF03` is the *earclip's* battery, relay builds only.) For version-gated features, send opcodes unconditionally and rely on graceful fallback — see the [feature/version matrix (§9.3)](#93-firmware-featureversion-matrix).
+> **No power telemetry, no version characteristic.** The Edge exposes **no Battery Service and no DIS** — glasses battery level is not readable over BLE, and there is no version characteristic to read. (The `0xF8` battery frame on `0xFF03` is the *earclip's* battery, relay builds only.) For the firmware version, subscribe to `0xFF03` and parse the `Narbis fw v…` `0xF1` log line emitted on subscribe (fw ≥ 4.12.1, [§4.4.2](#442-log-string-0xf1--variable)); only fall back to sending version-gated opcodes unconditionally with graceful fallback ([§9.3](#93-firmware-featureversion-matrix)) if that line never arrives.
 
 ### 4.1 Advertising / connection parameters
 
@@ -726,7 +737,11 @@ The glasses work without any app. A short magnet tap (0.15–4 s) on the temple 
 | 2 — Breathe + Strobe | 10 Hz strobe, dark-phase duty modulated by the breathing waveform |
 | 3 — Strobe | Plain 10 Hz strobe |
 
+> The behaviors above are **factory defaults**, not fixed program properties. The standalone programs render from the same NVS-persisted parameters the opcodes write — breathe rate/shape (`0xB1`/`0xB2`/`0xB5`) and strobe frequency/duty (`0xAB`/`0xAC`, defaults 10 Hz / 50 %) — so values your app persists permanently change the no-app magnet-tap programs (e.g. a persisted 12 BPM or 17 Hz strobe becomes the new Program 1/3 behavior). `[0xBF, 0x00]` (factory reset, [§4.3](#43-control-characteristic-0xff01--command-opcodes)) restores the defaults.
+
 Hold the magnet closed **≥ 5 s** for deep sleep. (On relay-enabled builds, 5 short taps also trigger "forget earclip" — see [§4.7](#47-the-edge-as-relay).)
+
+> ⚠️ **Magnet gestures are NOT disabled while a client is connected** — only OTA mode suspends gesture handling. A short tap (0.15–4 s) mid-session unconditionally cycles the program, overwriting your app's lens mode (e.g. a static feedback duty becomes program 2 = 10 Hz breathe+strobe), and a ≥ 5 s hold deep-sleeps the device and drops the connection. In reconnect UX, tell users to tap **only after** the device is confirmed absent from scans ([§2.5](#25-reconnection)/[§7.2](#72-windows--winrt--python-bleak-gotchas)) — a tap during a transient link drop, or while another client holds the connection, changes the running program or sleeps the device. Apps that care about lens state should watch the `led_mode` byte (offset 20) of the 1 Hz `0xF3` health frame ([§4.4.4](#444-health-telemetry-0xf3--22-b)) to detect an external takeover and re-assert their mode — noting `led_mode`/`led_duty` exist only on the 22-byte frame (late glasses fw 4.15.3+; older firmware emits the 20-byte form without them, [§9.3](#93-firmware-featureversion-matrix)).
 
 #### 4.1.2 Session auto-sleep — the `0xA4` timer
 
@@ -737,6 +752,8 @@ Hold the magnet closed **≥ 5 s** for deep sleep. (On relay-enabled builds, 5 s
 > - At expiry the device **enters deep sleep**: the lens goes dark, BLE drops, and a magnet tap is required to wake it.
 >
 > **Recipe:** have the user wake the glasses at session start, then immediately write `[0xA4, minutes]` ≥ your planned session length (max 60). Sessions longer than 60 minutes require a mid-session re-wake.
+>
+> **Tracking remaining time:** `uptime_s` in the 1 Hz `0xF3` health frame ([§4.4.4](#444-health-telemetry-0xf3--22-b)) counts from the same origin as the session clock (device wake/boot), so remaining session time = (`0xA4` minutes × 60) − `uptime_s`. The firmware sends **no warning before expiry** — deep sleep hits mid-session unannounced — so use this to warn or wind down your protocol in time. (On legacy builds with the on-glasses PPG sensor, a sensor plug-in restarts the session clock but not `uptime_s`, so the estimate errs on the early/safe side.)
 
 ### 4.2 Service `0x00FF` — characteristic map
 
@@ -745,9 +762,9 @@ Hold the magnet closed **≥ 5 s** for deep sleep. (On relay-enabled builds, 5 s
 | Control | `0xFF01` | read + write | client → device | All commands; see §4.3 |
 | OTA Data | `0xFF02` | write + write-no-response | client → device | OTA payload chunks; see §6 |
 | Status | `0xFF03` | read + notify | device → client | Multiplexed by leading byte: ADC stats, log, coherence, health, relay, OTA status |
-| PPG Stream | `0xFF04` | read + notify | device → client | Batched PPG samples + beat info |
+| PPG Stream | `0xFF04` | read + notify | device → client | Batched PPG samples + beat info — **not emitted on current fw** ([§4.5](#45-ppg-stream-characteristic-0xff04)); layout kept for reference |
 
-Both `0xFF03` and `0xFF04` have a CCCD descriptor (`0x2902`) — enable it with `start_notify()` (bleak) / `startNotifications()` (Web Bluetooth).
+Both `0xFF03` and `0xFF04` have a CCCD descriptor (`0x2902`) — enable it with `start_notify()` (bleak) / `startNotifications()` (Web Bluetooth). (`0xFF04` currently yields no notifications — [§4.5](#45-ppg-stream-characteristic-0xff04).)
 
 > **Plain notify.** Subscribe to `0xFF03` by writing `0x0001` (notifications) to the CCCD — `start_notify()` / `startNotifications()` do this for you. A client that enables *indications* (`0x0002`) instead receives **nothing**. Notifications are unacknowledged, so frames can arrive back-to-back.
 
@@ -757,13 +774,13 @@ Both `0xFF03` and `0xFF04` have a CCCD descriptor (`0x2902`) — enable it with 
 >
 > Any **1-byte write is interpreted as the legacy opacity command**: the byte is a direct lens duty, `0–255` → `0–100 %`, and it **stops whatever mode is running**. A bare `[0xA6]` or `[0xA7]` is treated as an opacity write of 166 or 167 — not a command. **Pad argument-less opcodes with `0x00`**: `[0xA6, 0x00]`, `[0xA7, 0x00]`.
 >
-> The legacy opacity write is also a feature: it's the cheapest way to set a static tint, safe to stream at up to ~20 Hz for continuous feedback. `0x00` = fully clear, `0xFF` = fully dark. Not persisted.
+> The legacy opacity write is also a feature: it's the cheapest way to set a static tint, streamable for continuous feedback under the same cadence rules as [§4.6.1](#461-continuous-opacity-feedback--the-biofeedback-pattern) — **~10–12 Hz recommended (12 Hz is the production-proven rate); the link tolerates up to ~20 Hz only as a ceiling**. `0x00` = fully clear, `0xFF` = fully dark. Not persisted.
 
 > ### 🚨 CRITICAL — serialize all writes to `0xFF01`
 >
 > Issue the next write only after the previous one completes. Concurrent GATT writes to the same characteristic fail on WinRT ("operation already in progress") and Web Bluetooth alike ([§7](#7-client-gotchas)). Route commands **and** the continuous duty stream ([§4.6.1](#461-continuous-opacity-feedback--the-biofeedback-pattern)) through one queue.
 
-Most commands are a 2-byte write `[opcode, arg]`. The firmware **silently clamps out-of-range arguments and never sends a NACK** — validate client-side, and use a write timeout if you need to detect failure.
+Most commands are a 2-byte write `[opcode, arg]`. The firmware **never sends a GATT error for a bad argument** — most opcodes clamp out-of-range values into range, but a few do not: `0xB7` and `0xB8` **ignore** out-of-range arguments entirely (emitting a `0xF1` OOR log frame), and `0xE0` **rejects the whole write** if validation fails. Validate client-side, and use a write timeout if you need to detect failure.
 
 | Opcode | Name | Arg | Persisted? | Notes |
 |---|---|---|---|---|
@@ -779,7 +796,7 @@ Most commands are a 2-byte write `[opcode, arg]`. The firmware **silently clamps
 | `0xAB` | Strobe frequency | 1–50 (Hz) — 2-byte form; a 3-byte deci-Hz form exists ([§4.6.6](#466-strobe)) | yes | |
 | `0xAC` | Strobe duty | 10–90 (%) | yes | dark fraction of each strobe period |
 | `0xAD` | OTA Page Confirm | `0x01` commit / `0x00` resend | no | see §6 |
-| `0xB0` | Breathe LED mode | `0x00` breathe / `0x01` breathe+strobe | no | `0x00` (or no arg) = plain breathe; `0x01` = breathe+strobe, phase-locked to `0xBA`/`0xB1`/`0xB2` (fw ≥ 4.15.6). Toggling the arg preserves breathe phase. |
+| `0xB0` | Breathe LED mode | `0x00` breathe / `0x01` breathe+strobe | no | `0x00` (or any arg other than `0x01`) = plain breathe; `0x01` = breathe+strobe, phase-locked to `0xBA`/`0xB1`/`0xB2` (fw ≥ 4.15.6). Toggling the arg preserves breathe phase. ⚠️ A bare 1-byte `[0xB0]` is **not** breathe — it is the legacy opacity write (69 % static tint, stops the current mode); always send `[0xB0, 0x00]` (see the ≥ 2-byte warning above). |
 | `0xB1` | Breathe BPM | 1–30 | yes | integer BPM — use `0xBA` for fractional rates |
 | `0xB2` | Breathe inhale ratio | 10–90 (%) | yes | |
 | `0xB3` | Breathe hold-top | 0–50 (×100 ms) | yes | |
@@ -789,7 +806,7 @@ Most commands are a 2-byte write `[opcode, arg]`. The firmware **silently clamps
 | `0xB7` | PPG program | 0–3 | no | Legacy pipeline ([§4.8](#48-legacy-on-board-coherence-pipeline-unused)): 0 heartbeat, 1 coh-breathe, 2 coh-lens, 3 coh-breathe-strobe |
 | `0xB8` | Coherence difficulty | 0–3 | yes | Legacy pipeline: easy / medium / hard / expert |
 | `0xB9` | Adaptive pacer | 0/1 | yes | Legacy pipeline |
-| `0xBA` | **Breathe sync** | 3 B payload | no | App-side lens phase-lock (fw ≥ 4.15.5). 4 B on the wire: `[0xBA][cycle_ms:u16 LE][inhale_pct:u8]`. Restarts the `LED_MODE_BREATHE` cosine at the moment of the write (= your app's inhale boundary) and renders at the exact cycle length sent, so the glasses lens, an on-screen breathing cue, and an audio chime can share one clock. **Send ONLY at the breath-cycle boundary, never mid-breath** — full rationale in [§4.6.5](#465-phase-sync--the-one-rule-write-only-at-the-breath-boundary). Send it at each boundary and on connect/session start. A firmware lens slew-rate limiter fades any re-anchor (~250 ms) so resyncs never snap. Auto-expires 2 cycles after the last sync (reverts to the integer-BPM `0xB1` rate). Ignored by firmware < 4.15.5 (unknown opcode), so it's safe to always send. |
+| `0xBA` | **Breathe sync** | 3 B payload | no | App-side lens phase-lock (fw ≥ 4.15.5). 4 B on the wire: `[0xBA][cycle_ms:u16 LE][inhale_pct:u8]`. Valid `cycle_ms` 2000–30000 ms (2–30 s per breath) and `inhale_pct` 10–90; out-of-range values are silently clamped (no NACK), so a cycle above 30 s renders at 30 s and will drift against your app clock. Restarts the `LED_MODE_BREATHE` cosine at the moment of the write (= your app's inhale boundary) and renders at the exact cycle length sent, so the glasses lens, an on-screen breathing cue, and an audio chime can share one clock. **Send ONLY at the breath-cycle boundary, never mid-breath** — full rationale in [§4.6.5](#465-phase-sync--the-one-rule-write-only-at-the-breath-boundary). Send it at each boundary and on connect/session start. A firmware lens slew-rate limiter fades any re-anchor (~250 ms) so resyncs never snap. Auto-expires 2 cycles after the last sync (reverts to the integer-BPM `0xB1` rate). Ignored by firmware < 4.15.5 (unknown opcode), so it's safe to always send. |
 | `0xBF` | Factory reset | any | n/a | wipes the persisted-settings NVS namespace |
 | `0xC0` | *(reserved)* | — | — | Listed in the firmware's internal opcode comment table but has no dispatcher case — do not use |
 | `0xC1` | Forget earclip | any (ignored) | no | Relay control ([§4.7](#47-the-edge-as-relay)) — inert on stock builds. Wipes the stored earclip pairing, drops the central connection, starts a fresh scan. Visual feedback: 3 fast lens pulses. Same effect as 5 short magnet taps. |
@@ -836,8 +853,8 @@ The Edge multiplexes several packet types onto the same characteristic, distingu
 | Type byte | Cadence | Length | Purpose |
 |---|---|---|---|
 | `0xF0` | *(none — not emitted on current fw, see §4.4.1)* | 11 B | Raw ADC stats (min / max / mean of last window) |
-| `0xF1` | on demand | 1 + N B (N ≤ 48) | Firmware log strings (printf output) |
-| `0xF2` | every 1000 ms | 18 B | Coherence packet (legacy pipeline — HRV bands + score) |
+| `0xF1` | on demand | 1 + N B (N ≤ 63) | Firmware log strings (printf output) |
+| `0xF2` | every 1000 ms once computing (silent until first compute — see §4.4.3) | 18 B | Coherence packet (legacy pipeline — HRV bands + score) |
 | `0xF3` | every 1000 ms | 22 B | Health telemetry (uptime, heap, jitter, errors, LED state) — see §4.4.4 |
 | `0xF4` | event-driven | 1 + 74 B | Relayed earclip CONFIG payload — see §4.4.5 |
 | `0xF5` | event-driven | 1 + variable | Relayed earclip RAW_PPG batch — see §4.4.6 |
@@ -860,7 +877,7 @@ def on_status(_char, data: bytearray):
     elif t == 0xFA and len(data) >= 7:                    # link quality
         ec_rssi, dash_rssi = struct.unpack_from('<bb', data, 1)
         mtu, drops = struct.unpack_from('<HH', data, 3)
-    elif t == 0xF3 and len(data) >= 22:                   # health telemetry (fw ≥ 4.15.4 length)
+    elif t == 0xF3 and len(data) >= 22:                   # health telemetry (22-byte form; late 4.15.3+ — the length check is the right gate)
         uptime_s, heap_free, heap_min = struct.unpack_from('<III', data, 1)
         led_mode, led_duty = data[20], data[21]           # led_duty is a 0–100 percentage
     elif t <= 0x08:                                       # OTA status frame
@@ -889,9 +906,11 @@ If `min == 0` or `max ≈ 4095`, the PPG sensor is disconnected or saturated. If
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 1 | `0xF1` |
-| 1..N | up to 48 | ASCII string (NUL-terminated or truncated) |
+| 1..N | up to 63 | ASCII string (NUL-terminated or truncated) — string content up to 62 chars (the 63rd payload byte is the NUL terminator when the line is truncated); max notification 64 B |
 
-Useful for debugging. The firmware emits a hello on subscribe, a heartbeat every 5 s, and ad-hoc events.
+Useful for debugging. The firmware emits a hello on subscribe, an "alive" heartbeat every ~30 s, and ad-hoc events (heartbeat and ad-hoc lines share the same `0xF1` type).
+
+> **The subscribe hello doubles as the version probe.** On every `0xFF03` subscribe (rising edge), firmware ≥ 4.12.1 emits a `0xF1` log line of the form `Narbis fw v<version> test=<0|1> mode=<led_mode>` (e.g. `Narbis fw v4.15.6-strobe-sync test=0 mode=1`). The version string may carry a build suffix after the dotted numerics, so extract the leading `X.Y.Z` (e.g. regex `/Narbis fw v(\d+\.\d+\.\d+)/`). This is the only firmware-version readback on the Edge — see [§9.3](#93-firmware-featureversion-matrix).
 
 #### 4.4.3 Coherence packet (`0xF2`) — 18 B
 
@@ -909,27 +928,27 @@ Emitted by the **legacy on-board coherence pipeline** ([§4.8](#48-legacy-on-boa
 | 12 | 1 | `lf_norm_pct` | 0–100 |
 | 13 | 1 | `hf_norm_pct` | 0–100 |
 | 14 | 2 | `lf_hf_ratio_fp8_8` | u16 LE; divide by 256 for the decimal ratio |
-| 16 | 1 | `n_ibis_used` | 0–120 |
-| 17 | 1 | `pacer_bpm` | Current adaptive-pacer target BPM (0 when the adaptive pacer is disabled) |
+| 16 | 1 | `n_ibis_used` | 0–120 nominal; emitted frames always carry ≥ `min_ibis` (never 0 — see below) |
+| 17 | 1 | `pacer_rate_q5` | Current pacer rate in quintets (BPM × 5, 0.2-BPM resolution); divide by 5 for BPM (e.g. 30 = 6.0 BPM). Range 15–50 (3.0–10.0 BPM) while a coherence-breathe program (PPG program 1/3) is running. When the adaptive pacer is disabled (`0xB9` = 0) this reads 30, not 0 — the firmware forces it back to 30 (6.0 BPM) at every cycle boundary. 0 only before the coherence-breathe family has ever been entered since boot; after the program exits, the byte retains its last value (stale) rather than resetting to 0. |
 
-If `n_ibis_used == 0`, the pipeline has no beats — see the troubleshooting matrix ([§8](#8-troubleshooting-matrix)).
+The Edge emits **no `0xF2` frames at all until the first successful coherence compute**, which requires at least `min_ibis` beats in the window (`0xE0`-clamped 5–120, firmware default 20). An emitted frame therefore always has `n_ibis_used ≥ min_ibis` — a frame with `n_ibis_used == 0` never occurs. If the pipeline has no beats, the symptom is `0xF2` silence — see the troubleshooting matrix ([§8](#8-troubleshooting-matrix)).
 
 #### 4.4.4 Health telemetry (`0xF3`) — 22 B
 
 | Offset | Size | Field | Notes |
 |---|---|---|---|
 | 0 | 1 | `0xF3` | |
-| 1 | 4 | `uptime_s` | u32 LE |
+| 1 | 4 | `uptime_s` | u32 LE; counts from device wake — usable to compute remaining session time ([§4.1.2](#412-session-auto-sleep--the-0xa4-timer)) |
 | 5 | 4 | `heap_free` | u32 LE |
 | 9 | 4 | `heap_min` | u32 LE; minimum free heap since boot — leak detector |
 | 13 | 2 | `ppg_stack_hwm_words` | u16 LE; `0xFFFF` = >65535 |
 | 15 | 2 | `ble_send_errors` | u16 LE; saturates at `0xFFFF` |
-| 17 | 2 | `jitter_max_us` | u16 LE; reset every 5 s |
-| 19 | 1 | `jitter_ticks_over` | u8; reset every 5 s |
+| 17 | 2 | `jitter_max_us` | u16 LE; cumulative since boot on current firmware (the 5-s window reset was removed with the on-glasses PPG pipeline — only older PPG-enabled firmware reset it every 5 s); saturates at `0xFFFF` |
+| 19 | 1 | `jitter_ticks_over` | u8; cumulative since boot on current firmware (same history — 5-s reset only on older PPG-enabled firmware); saturates at `0xFF` |
 | 20 | 1 | `led_mode` | u8 — `led_mode_t` enum: `0` strobe, `1` static, `2` breathe, `3` breathe+strobe, `4` pulse-on-beat, `5` coherence-breathe, `6` coherence-breathe+strobe, `7` coherence-lens. Mirror of the lens-driver state machine. (There is no "off" value — a clear lens is `static`/`breathe` at duty 0.) |
 | 21 | 1 | `led_duty` | u8 — effective lens duty as a **percentage, 0–100**. Snapshot of the actual lens output at emit time, not the requested duty. Useful for "is the lens doing what I asked?" overlays. |
 
-A spike in `ble_send_errors` means your client is overwhelming the device — slow your writes. `led_mode` + `led_duty` were added in glasses fw 4.15.4; older firmware emits a 20-byte frame without these two bytes.
+A rising `ble_send_errors` means the device's own notifications are failing to send (congested or degraded link, notifications outpacing what the connection can carry) — it counts failed device→client NOTIFY sends, not client writes; check link quality and connection parameters rather than your write rate. Note the jitter counters are **not windowed stats** on current builds (cumulative since boot) — a "current window" jitter gauge cannot be built from them. `led_mode` + `led_duty` were added in late glasses fw 4.15.3 builds (the 4.15.3 version string covers both 20- and 22-byte builds); older firmware emits a 20-byte frame without these two bytes — key on frame length (20 vs 22 B), not on version.
 
 #### 4.4.5 Relayed earclip CONFIG (`0xF4`) — 75 B
 
@@ -954,7 +973,7 @@ Relay-enabled builds only. Forwarded from the earclip's RAW_PPG characteristic. 
 | 3 | 2 | `n_samples` | u16 LE, ≤ 29 |
 | 5 | 8·N | samples | Each `[red:u32 LE, ir:u32 LE]` |
 
-Maximum payload: 1 + 4 + 29·8 = **237 B**. The 1-byte type prefix is the only difference vs. the earclip's direct RAW_PPG notification ([§3.1.3](#313-raw_ppg--6bacca91)).
+Maximum payload: 1 + 4 + 29·8 = **237 B**. The 1-byte type prefix is the only difference vs. the earclip's direct RAW_PPG notification ([§3.1.3](#313-raw_ppg--6bacca91-)).
 
 #### 4.4.7 Relay link state (`0xF6`) — 2 B
 
@@ -979,7 +998,7 @@ ui.setEarclipBadge(connected);
 
 #### 4.4.8 Relayed earclip diagnostics (`0xF7`) — variable
 
-Relay-enabled builds only. Forwarded earclip DIAGNOSTICS frames (see [§3.1.9](#319-diagnostics--31d99572)). Only fires when diagnostic streams are enabled in the earclip config — usually a no-op.
+Relay-enabled builds only. Forwarded earclip DIAGNOSTICS frames (see [§3.1.9](#319-diagnostics--31d99572-)). Only fires when diagnostic streams are enabled in the earclip config — usually a no-op.
 
 | Offset | Size | Field |
 |---|---|---|
@@ -988,7 +1007,7 @@ Relay-enabled builds only. Forwarded earclip DIAGNOSTICS frames (see [§3.1.9](#
 
 #### 4.4.9 Relayed earclip BATTERY (`0xF8`) — 5 B
 
-Relay-enabled builds only. Structured battery snapshot. Mirrors the earclip's BATTERY payload ([§3.1.4](#314-battery--b59d3ba1)) with a 1-byte type prefix. Emitted whenever the earclip's BATTERY characteristic notifies — typically every 30 s.
+Relay-enabled builds only. Structured battery snapshot. Mirrors the earclip's BATTERY payload ([§3.1.4](#314-battery--b59d3ba1-)) with a 1-byte type prefix. Emitted whenever the earclip's BATTERY characteristic notifies — typically every 30 s.
 
 | Offset | Size | Field | Notes |
 |---|---|---|---|
@@ -1001,7 +1020,7 @@ Prefer this over parsing the human-readable `0xF1` log line (`"earclip batt soc=
 
 #### 4.4.10 Relayed earclip IBI (`0xF9`) — 5 B
 
-Relay-enabled builds only (since glasses fw 4.15.2). One inter-beat-interval observation, forwarded every time the earclip's IBI characteristic notifies (~1 Hz at resting HR). Mirrors the earclip IBI payload ([§3.1.1](#311-ibi--78ef492f)) with a 1-byte type prefix.
+Relay-enabled builds only (since glasses fw 4.15.2). One inter-beat-interval observation, forwarded every time the earclip's IBI characteristic notifies (~1 Hz at resting HR). Mirrors the earclip IBI payload ([§3.1.1](#311-ibi--78ef492f-)) with a 1-byte type prefix.
 
 | Offset | Size | Field | Notes |
 |---|---|---|---|
@@ -1129,7 +1148,7 @@ The primary third-party integration pattern: your software produces a feedback v
 - Three hardening rules (production-proven):
   1. **Coalesce** — skip the write if the duty is unchanged.
   2. **Never overlap writes** — if one is in flight, drop the frame (the next catches up). See the serialization rule in [§4.3](#43-control-characteristic-0xff01--command-opcodes).
-  3. Prefer **write-without-response** for the stream.
+  3. **Keep exactly one write in flight** — `0xFF01` is **write-with-response only** on current firmware ([§4.2](#42-service-0x00ff--characteristic-map); only OTA `0xFF02` exposes write-no-response), and the with-response round-trip is exactly why the one-write-in-flight rule matters at 12 Hz. If you add a property guard like the production dashboard's (`ch.properties?.writeWithoutResponse` → without-response, else with-response), write-without-response will be used automatically if a future firmware adds the property.
 - The 1-byte legacy opacity write (0–255, [§4.3](#43-control-characteristic-0xff01--command-opcodes)) is an equivalent alternative under the same cadence rules.
 
 Language-neutral wire sequence (worked examples in the [quickstart](#quickstart--make-the-lens-respond-to-your-signal)):
@@ -1138,7 +1157,7 @@ Language-neutral wire sequence (worked examples in the [quickstart](#quickstart-
 connect  →  [0xA4, 0x3C]  (60-min session guard)  →  loop: [0xA5, duty]
 ```
 
-> **On connect** the lens is running its boot program (6 BPM breathe) until your first write takes over.
+> **On connect** the lens is already running a standalone program until your first write takes over — normally Breathe at the **NVS-persisted** `0xB1` rate (factory default 6 BPM; a previous client's setting survives, [§4.3](#43-control-characteristic-0xff01--command-opcodes)), or a strobe program if a magnet tap already cycled it ([§4.1.1](#411-standalone-programs--magnet-gestures)). Don't treat "6 BPM breathe" as a connect-time invariant.
 >
 > **`0xA5` and `0xA2` write the SAME firmware variable** (`brightness`): `0xA5` = enter static mode + set the level (not persisted); `0xA2` = set the same value AND persist it. There is **no** separate ceiling clamping `0xA5`. Side effect: the last streamed `0xA5` value becomes the breathe **depth** if you later switch to breathe mode without re-sending `0xA2`.
 
@@ -1159,7 +1178,7 @@ There are two ways to make the lens "breathe" (fade clear → dark → clear). (
 | `0xB1` | bpm 1–30 | breathe rate — **integer BPM** (see §4.6.5) |
 | `0xB2` | pct 10–90 | inhale fraction (40 = inhale 40 % / exhale 60 %) |
 | `0xA2` | pct 0–100 | amplitude / depth — peak lens darkness at full inhale (your feedback → depth map) |
-| `0xBA` | `[cycle_ms u16 LE][inhale_pct u8]` | **phase-lock + exact cycle** (fw ≥ 4.15.5) — see §4.6.5 |
+| `0xBA` | `[cycle_ms u16 LE, 2000–30000][inhale_pct u8, 10–90]` (out-of-range silently clamped) | **phase-lock + exact cycle** (fw ≥ 4.15.5) — a **per-breath keep-alive**: the exact-cycle override auto-expires 2 cycles after the last write, so re-send at every breath boundary (see §4.6.5) |
 | `0xA5` | pct 0–100 | STATIC mode — immediate tint; use as a slow setpoint, not a stream |
 
 > **Recommended envelope.** The firmware accepts `0xB1` 1–30 BPM and `0xB2` 10–90 % inhale, but production clinical clients constrain to **4–20 BPM** and **30–70 %** inhale — treat that as the recommended envelope.
@@ -1197,7 +1216,9 @@ The electrochromic cell shows **no visible tint below ~26 % drive**, so the firm
 
 The firmware's breathe phase is **free-running**: `t = (tick_count × 10 ms) mod cycle_ms`, and nothing resets it. So the glasses' inhale/exhale boundaries fall at **arbitrary times** relative to your on-screen breathing cue and your audio chime — they drift apart. And `0xB1` is **integer BPM**, so a fractional pacer (e.g. 5.4 br/min) rounds, adding a rate mismatch.
 
-**`0xBA BREATHE_SYNC` `[cycle_ms u16 LE][inhale_pct u8]`** fixes both: it **restarts the cosine at the instant of the write** (phase origin = now = start of inhale) **and** sets the **exact** cycle length in ms.
+**`0xBA BREATHE_SYNC` `[cycle_ms u16 LE][inhale_pct u8]`** fixes both: it **restarts the cosine at the instant of the write** (phase origin = now = start of inhale) **and** sets the **exact** cycle length in ms (within the 2–30 s valid window — out-of-range values are silently clamped, [§4.3](#43-control-characteristic-0xff01--command-opcodes)).
+
+> **The exact-cycle override is a per-breath keep-alive, not persistent state.** The firmware renders at the `0xBA` cycle length only while the last sync write is at most **2 cycles** old; after that it auto-expires back to the integer `0xB1` rate (`60000 / bpm`) — so a client that sends `0xBA` once (or only on rate changes) silently reverts to the rounded integer BPM within two breaths, reintroducing exactly the rate mismatch this section exists to fix. Re-sending `0xBA` at every breath boundary is therefore **required** to hold a fractional rate — the per-boundary push in the code samples below is functionally mandatory, not just snap-avoidance. (The expiry is deliberate: it lets magnet/hall-button breathe revert cleanly once the app stops syncing. It is time-based, so it applies while connected too, not just after a disconnect.)
 
 > ### ⚠️ Send `0xBA` (and any `0xB1` / `0xA2` change) **only at the breath-cycle boundary** — never mid-breath
 >
@@ -1295,7 +1316,7 @@ async function setStrobeFreqHz(chCtrl, hz) {
 
 #### 4.6.7 Backward compatibility & version
 
-`0xBA` is **ignored by firmware < 4.15.5** (unknown opcode → silent no-op), so you can always send it; on old firmware the lens stays on the integer-`0xB1` rate path (rate-matched, not phase-locked). **The Edge does not expose a Device Information Service**, so there is **no BLE firmware-version readback on the glasses** — send `0xBA` unconditionally (it's safe) rather than gating on version. (The *earclip* does expose DIS `0x180A` / `0x2A26` — [§3.4](#34-device-information-service--0x180a) — but that is the earclip's version, not the Edge's.) The full feature/version matrix is in [§9.3](#93-firmware-featureversion-matrix).
+`0xBA` is **ignored by firmware < 4.15.5** (unknown opcode → silent no-op), so you can always send it; on old firmware the lens stays on the integer-`0xB1` rate path (rate-matched, not phase-locked) — and on current firmware the lens likewise falls back to that same integer path **2 cycles after the last `0xBA`** ([§4.6.5](#465-phase-sync--the-one-rule-write-only-at-the-breath-boundary)), which is why `0xB1` must always accompany `0xBA`. **The Edge does not expose a Device Information Service** and has no version characteristic — the only version readback is the informal `0xF1` hello string emitted on `0xFF03` subscribe (`Narbis fw v…`, fw ≥ 4.12.1; [§4.4.2](#442-log-string-0xf1--variable)); on older firmware there is no readback at all, so send `0xBA` unconditionally (it's safe) rather than gating on version. (The *earclip* does expose DIS `0x180A` / `0x2A26` — [§3.4](#34-device-information-service--0x180a) — but that is the earclip's version, not the Edge's.) The full feature/version matrix is in [§9.3](#93-firmware-featureversion-matrix).
 
 ### 4.7 The Edge as relay
 
@@ -1313,7 +1334,7 @@ The Edge is not just a peripheral — it can also run a NimBLE **central** that 
                                            │ BLE (peripheral role on Edge)
                                            │   • 0xFF01 commands (incl. 0xC1/C3/C4)
                                            │   • 0xFF03 status + relayed 0xF4..0xF9
-                                           │   • 0xFF04 native PPG stream
+                                           │   • 0xFF04 PPG stream (not emitted on current fw — §4.5)
                                            │
                                   ┌────────▼────────┐
                                   │  Narbis Edge    │
@@ -1329,7 +1350,7 @@ The Edge is not just a peripheral — it can also run a NimBLE **central** that 
                                   └─────────────────┘
 ```
 
-**Pairing.** First boot or after a `0xC1` (or 5 magnet-taps), the Edge scans generally for the earclip's NARBIS service UUID, picks the strongest hit, and stores the MAC in NVS. Subsequent boots do a fast directed scan for that MAC (5 s), falling back to general scan after two misses.
+**Pairing.** First boot or after a `0xC1` (or 5 magnet-taps), the Edge scans generally for the earclip's NARBIS service UUID, picks the strongest hit, and stores the MAC in NVS. Subsequent boots do a directed scan for that MAC (30 s scan window, ~5 s backoff between attempts), repeating indefinitely — there is no automatic fallback to general scan while a MAC is persisted. To pair a different earclip (e.g. a replacement unit), send `0xC1` (or 5 magnet-taps) to forget the stored MAC; general scan runs only when no MAC is stored.
 
 **What the Edge subscribes to.** When linked, the Edge keeps live subscriptions to the earclip's IBI, BATTERY, CONFIG, RAW_PPG (if enabled via `0xC4`), and DIAGNOSTICS characteristics. Every notification is relayed to the client-facing `0xFF03` with the appropriate type byte:
 
@@ -1373,7 +1394,7 @@ sendCtrlCommand(chCtrl, 0xC1);                               // forget earclip p
 
 The firmware retains a complete on-board HRV-coherence pipeline: it collects IBIs (from the earclip relay on relay-enabled builds, or injected via `0xCA`), runs band-power analysis on a fixed FFT grid, produces the `0xF2` coherence packet ([§4.4.3](#443-coherence-packet-0xf2--18-b)), and can drive the lens itself through four **PPG programs**. Current apps do not use any of this — they compute their feedback app-side and drive the lens via [§4.6](#46-driving-the-edge-lens). The opcodes remain live on the wire and are documented here for completeness and for thin clients that want the glasses to do everything.
 
-**Minimal use** (per connect): `[0xCB, 0x01]` to declare the app the beat authority, `[0xB7, n]` to pick a program, then one 5-byte `[0xCA][ibi_ms:u16 LE][confidence][flags]` write per beat (write-without-response is fine; the firmware drops beats with `confidence < conf_threshold`, default 50, or `flags & 0x01` ARTIFACT). Coherence results arrive as `0xF2` frames at 1 Hz. `0xCB` is not persisted — re-assert on every connect.
+**Minimal use** (per connect): `[0xCB, 0x01]` to declare the app the beat authority, `[0xB7, n]` to pick a program, then one 5-byte `[0xCA][ibi_ms:u16 LE][confidence][flags]` write per beat (write-with-response — `0xFF01` does not expose write-without-response, [§4.2](#42-service-0x00ff--characteristic-map); the firmware drops beats with `confidence < conf_threshold`, default 50, or `flags & 0x01` ARTIFACT). Coherence results arrive as `0xF2` frames at 1 Hz. `0xCB` is not persisted — re-assert on every connect.
 
 **PPG programs** (`0xB7`, not persisted):
 
@@ -1401,11 +1422,11 @@ The firmware retains a complete on-board HRV-coherence pipeline: it collects IBI
 | 10 | 1 | `peak_halfwidth` | 0 | 0–8 | `0` = single-bin peak; `N` = sum peak ± N bins |
 | 11 | 1 | `coh_multiplier` | 100 | 10–255 | Score scaling (was 250 pre-fw 4.14.31 — old presets hard-coding 250 will under-shoot) |
 
-There is **no read-back characteristic** for the current params — the firmware echoes the active values as a `0xF1` log line on boot and after every accepted `0xE0` write.
+There is **no read-back characteristic** for the current params, and no echo over BLE at boot or on (re)connect — at boot the active values go to the serial console only. The only wire echo is the `0xE0 ok` line on `0xF1` after an accepted write, and it reports only the LF/HF bands, peak window ± halfwidth, and multiplier (not `min_ibis`, `conf_threshold`, or the VLF band). Clients must shadow the full 12-byte param set locally.
 
-**`0xB8` — difficulty preset** (persisted): `0` Easy (widest LF-peak window, no score penalty) / `1` Medium / `2` Hard (narrow window + scale-down) / `3` Expert (strictest). `0xB8` and `0xE0` are not orthogonal — each overrides the fields the other set; treat them as alternatives, not stackable.
+**`0xB8` — difficulty preset** (persisted): selects a gamma exponent applied to the coherence-to-lens-opacity mapping in the coh-lens program (`0xB0` arg 2 / PPG program 2) only: `lens_clear_pct = (coh/100)^gamma × 100`. `0` Easy gamma 1.0 (linear, historical), `1` Medium 1.5, `2` Hard 2.0, `3` Expert 3.0; args > 3 are ignored. All curves meet at coh = 0 (dark) and coh = 100 (fully clear) — no dead zones (e.g. at coh = 50 the lens is 50/35/25/13 % clear for Easy/Medium/Hard/Expert). Difficulty does **NOT** touch the coherence score itself — the score is computed identically at every difficulty (same formula, same LF peak-search range), so scores are comparable across sessions and difficulty levels; do not rescale scores per difficulty. `0xB8` is fully orthogonal to `0xE0`: it writes no pipeline parameter and `0xE0` writes no difficulty — the two can be combined freely.
 
-**`0xB9` — adaptive pacer toggle** (persisted): `1` = the pacer's target BPM walks slowly toward the user's measured resonant respiratory frequency (0.2 BPM steps, slew-limited); `0` = holds the fixed `0xB1` rate. Only takes effect at the next cycle boundary of PPG programs 1 / 3. The current target is exposed as `pacer_bpm` (byte 17) in the `0xF2` frame.
+**`0xB9` — adaptive pacer toggle** (persisted): `1` = the pacer's target BPM walks slowly toward the user's measured resonant respiratory frequency (0.2 BPM steps, slew-limited); `0` = fixed 6.0 BPM pacer (hard-coded — `0xB1`/`0xB2` have no effect on the coherence pacer in either mode; it always uses a 40/60 inhale/exhale split). Only takes effect at the next cycle boundary of PPG programs 1 / 3. The current target is exposed as `pacer_rate_q5` (byte 17, quintets = BPM × 5) in the `0xF2` frame — divide by 5 for BPM.
 
 **`0xD0`** resets the firmware's beat-detection state; **`0xB6`** enters pulse-on-beat mode directly.
 
@@ -1573,7 +1594,7 @@ The earclip notifies on the CONFIG characteristic with the updated 74-byte paylo
 
 ## 6. OTA — shared between both devices
 
-The wire protocol is **identical** on Edge and earclip — the earclip's OTA was deliberately ported from the Edge so a single updater handles both. The earclip adds three safety gates (battery, chip-ID, re-entry) on top.
+The data/status/page-handshake protocol is **identical** on Edge and earclip — the earclip's OTA was deliberately ported from the Edge so a single updater core handles both. Two per-device differences remain: **control-write lengths** — the earclip accepts ONLY exactly-2-byte writes on `0xFF01` (anything else returns an ATT invalid-attribute-value-length error), so the `[0xA8, size:u32 LE]` fast-erase START is **Edge-only** ([§6.3](#63-opcodes-write-to-0xff01-as-opcode-param)) — and **simple-status frame padding** ([§6.4](#64-status-notifications-read-from-0xff03)). The earclip adds three safety gates (battery, chip-ID, re-entry) on top.
 
 Always disambiguate by name first; the OTA service UUID `0x00FF` lives on both devices.
 
@@ -1598,29 +1619,33 @@ Always disambiguate by name first; the OTA service UUID `0x00FF` lives on both d
 
 | Opcode | Name | Param | Meaning |
 |---|---|---|---|
-| `0xA8` | START | `[image_size:u32 LE]` (preferred) or `0x00` | Enter OTA mode; device responds with `READY`. With the size (len ≥ 5), the device erases only an image-sized flash region — much faster begin, shorter radio stall. `[0xA8, 0x00]` = legacy full-slot erase (~1.5 MB — the slow path the 32 s supervision timeout exists to survive) |
+| `0xA8` | START | **Edge:** `[image_size:u32 LE]` (preferred) or `0x00`. **Earclip:** exactly `[0xA8, 0x00]` | Enter OTA mode; device responds with `READY`. **Edge:** with the size (len ≥ 5), the device erases only an image-sized flash region — much faster begin, shorter radio stall; `[0xA8, 0x00]` = legacy full-slot erase (~1.5 MB — the slow path the 32 s supervision timeout exists to survive). **Earclip:** a 5-byte START is **rejected** (ATT invalid-attribute-value-length — the earclip accepts only exactly-2-byte control writes), and there is no image-sized-erase path at all: it always calls `esp_ota_begin(OTA_SIZE_UNKNOWN)` |
 | `0xA9` | FINISH | `0x00` | Write any trailing partial page, flush, set boot partition, reboot |
 | `0xAA` | CANCEL | `0x00` | Abort transfer |
 | `0xAD` | PAGE_CONFIRM | `0x01` commit / `0x00` resend | Driven by client after verifying PAGE_CRC |
 
 ### 6.4 Status notifications (read from `0xFF03`)
 
-| First byte | Name | Length | Payload |
+| First byte | Name | Length (Edge) | Payload |
 |---|---|---|---|
-| `0x01` | READY | 1 B | `01` |
-| `0x02` | PROGRESS | 4 B | `02` + 3 progress bytes |
-| `0x03` | SUCCESS | 1 B | `03` — reboot is imminent, expect disconnect |
-| `0x04` | ERROR | 2 B | `04 <err>` |
-| `0x05` | CANCELLED | 1 B | `05` |
+| `0x01` | READY | 1 B | `01` — earclip: `[01 00 00 00]` (4 B, zero-padded)\* |
+| `0x02` | PROGRESS | 4 B | `02` + 3 progress bytes — **Edge-only / reserved**: the earclip never emits it |
+| `0x03` | SUCCESS | 1 B | `03` — reboot is imminent, expect disconnect. Earclip: `[03 00 00 00]`\* |
+| `0x04` | ERROR | 2 B | `04 <err>` — earclip: `[04 err 00 00]`\* |
+| `0x05` | CANCELLED | 1 B | `05` — earclip: `[05 00 00 00]`\* |
 | `0x06` | PAGE_CRC | 7 B | `06 page_hi page_lo crc32_be[4]` — client must verify and ack |
 | `0x07` | PAGE_OK | 3 B | `07 page_hi page_lo` — page committed to flash |
 | `0x08` | PAGE_RESEND | 3 B | `08 page_hi page_lo` — restart this page |
 
-Status frames range from **1 to 7 bytes** — length-check only the bytes you actually read.
+> \* The **earclip zero-pads the simple statuses to 4 B** (READY / SUCCESS / CANCELLED / ERROR as shown); the 1 B / 2 B lengths apply to the **Edge only**.
+
+Status frames range from **1 to 7 bytes on the Edge, 3 to 7 bytes on the earclip** — **dispatch on byte 0 only; never assert exact frame length.**
 
 > **Byte-order quirk:** the page-status frames (`0x06`/`0x07`/`0x08`) pack the page number **and** the CRC32 **big-endian** (MSB first) — the one part of the protocol that is not little-endian. The PAGE_CRC wire frame is `{0x06, page>>8, page&0xFF, crc>>24, crc>>16, crc>>8, crc&0xFF}`. The CRC *algorithm* is standard CRC-32 (poly `0xEDB88320`, == Python `zlib.crc32`) — only the wire byte order is big-endian.
 
 > **PAGE_RESEND rewinds the whole page.** On `[0xAD, 0x00]` the firmware discards the buffered page (rewinds the full 4096 B) — the client must resend the **entire page from its start**, not just the tail.
+
+> **Stop-and-wait is mandatory — two silent-failure rules.** (1) Any `0xFF02` data written between a page filling (PAGE_CRC) and the page's PAGE_OK / PAGE_RESEND is **silently dropped** — no ERROR notify, nothing on the wire; do not pipeline the next page while verifying the CRC. (2) Never let a single write straddle a 4096-B page boundary: when the page fills mid-write, the excess bytes are **discarded** (4096 = 16 × 244 + 192, so the 17th chunk of a page must be 192 B — the example loops in [§6.8](#68-python--complete-ota-loop-bleak)/[§6.9](#69-js--condensed-loop-web-bluetooth) get this right by slicing per page). Both losses surface only later as a CRC mismatch or corrupt image.
 
 A PAGE_CRC fires only when a full 4096-B page fills; a trailing **partial** page gets **no per-page handshake** — it is written during FINISH (`0xA9`). See [§6.8](#68-python--complete-ota-loop-bleak).
 
@@ -1645,8 +1670,9 @@ A PAGE_CRC fires only when a full 4096-B page fills; a trailing **partial** page
    client                              device
    ──────                              ──────
    subscribe to STATUS  ─────────────►
-   write [0xA8][size:u32 LE] ────────►      (or legacy [0xA8, 0x00] — full-slot erase)
-                        ◄──────── notify [0x01]   READY (1 B)
+   write [0xA8][size:u32 LE] (Edge) ►      (earclip: exactly [0xA8, 0x00] — 2 B only;
+                                            Edge legacy: [0xA8, 0x00] = full-slot erase)
+                        ◄──────── notify [0x01]   READY (1 B Edge / 4 B earclip)
 
    ┌── for each FULL 4096-B page ─────┐
    │  write data in 244-B chunks  ──► │
@@ -1662,9 +1688,11 @@ A PAGE_CRC fires only when a full 4096-B page fills; a trailing **partial** page
 
    write trailing partial page (< 4096 B) — no PAGE_CRC handshake
    write [0xA9, 0x00]   ─────────────►
-                        ◄──────── notify [0x03]   SUCCESS (1 B)
+                        ◄──────── notify [0x03]   SUCCESS (1 B Edge / 4 B earclip)
    (device reboots; you'll get a disconnect)
 ```
+
+No `0xFF02` writes are allowed inside the CRC/confirm window (between a page filling and its PAGE_OK / PAGE_RESEND) — they are **silently dropped** ([§6.4](#64-status-notifications-read-from-0xff03)).
 
 ### 6.7 Firmware image header — pre-flight validation
 
@@ -1676,13 +1704,15 @@ Before sending the first byte, validate that the `.bin` you're about to ship mat
 | 0x01 | 1 | segment_count | — |
 | 0x0C | 2 | `chip_id` (LE) | `0x0000` for ESP32 (Edge), `0x000D` for ESP32-C6 (earclip) |
 
-The `app_desc` magic `0xABCD5432` lives 32 bytes into the first segment payload (typically around offset 0x20–0x40 in the file), followed by a 32-byte version string — parse it to show the user "updating to vX.Y.Z" before flashing.
+The `app_desc` (ESP-IDF `esp_app_desc_t`) sits at fixed file offset `0x20` — immediately after the 24-byte image header and the 8-byte first-segment header, i.e. at the **start** of the first segment payload. Magic `0xABCD5432` (u32 LE) is at `0x20`; the NUL-terminated `version[32]` starts at `0x30` (16 bytes after the magic starts — `secure_version` and 8 reserved bytes sit in between, so do **NOT** read the version right after the magic); `project_name[32]` follows at `0x50`. Parse `version` at `0x30` to show the user "updating to vX.Y.Z" before flashing.
 
 ```python
-def validate_image(image: bytes, expect_c6: bool):
+def validate_image(image: bytes, expect_c6: bool) -> str:
     assert image[0] == 0xE9, 'not an ESP32 app image'
     chip_id, = struct.unpack_from('<H', image, 0x0C)
     assert chip_id == (0x000D if expect_c6 else 0x0000), f'wrong chip_id 0x{chip_id:04x}'
+    assert struct.unpack_from('<I', image, 0x20)[0] == 0xABCD5432, 'app_desc magic missing'
+    return image[0x30:0x50].split(b'\0')[0].decode()   # version, e.g. '4.15.6'
 ```
 
 ### 6.8 Python — complete OTA loop (bleak)
@@ -1693,7 +1723,7 @@ from bleak import BleakClient
 
 PAGE_SIZE, CHUNK_SIZE = 4096, 244
 
-async def ota_update(client: BleakClient, image: bytes):
+async def ota_update(client: BleakClient, image: bytes, is_edge: bool = True):
     status_q: asyncio.Queue = asyncio.Queue()
 
     def on_status(_char, data: bytearray):
@@ -1709,13 +1739,16 @@ async def ota_update(client: BleakClient, image: bytes):
     # 0. Subscribe BEFORE the first opcode or you'll miss READY / PAGE_CRC.
     await client.start_notify(EDGE_STATUS, on_status)
 
-    # 1. START with the image size — the device erases only an image-sized flash
-    #    region (fast begin). Legacy [0xA8, 0x00] erases the full ~1.5 MB slot:
-    #    the radio can block for tens of seconds — the reason the supervision
-    #    timeout is 32 s.
-    await client.write_gatt_char(EDGE_CTRL, struct.pack('<BI', 0xA8, len(image)), response=True)
+    # 1. START — Edge: 5-byte [0xA8][image_size:u32 LE]; the device erases only an
+    #    image-sized flash region (fast begin). Legacy [0xA8, 0x00] erases the full
+    #    ~1.5 MB slot: the radio can block for tens of seconds — the reason the
+    #    supervision timeout is 32 s. Earclip: control writes must be EXACTLY
+    #    2 bytes — a 5-byte START is rejected (ATT invalid-length BleakError), and
+    #    there is no image-sized-erase path (esp_ota_begin(OTA_SIZE_UNKNOWN) always).
+    start = struct.pack('<BI', 0xA8, len(image)) if is_edge else bytes([0xA8, 0x00])
+    await client.write_gatt_char(EDGE_CTRL, start, response=True)
     frame = await expect(timeout=40.0)
-    assert frame[0] == 0x01, f'expected READY, got {frame.hex()}'   # READY is 1 byte
+    assert frame[0] == 0x01, f'expected READY, got {frame.hex()}'   # READY: 1 B on Edge, 4 B zero-padded on earclip
 
     # 2. Page loop — only FULL 4096-B pages get the PAGE_CRC handshake (§6.4).
     n_full = len(image) // PAGE_SIZE
@@ -1748,7 +1781,8 @@ async def ota_update(client: BleakClient, image: bytes):
         await client.write_gatt_char(EDGE_DATA, tail[off:off + CHUNK_SIZE], response=False)
 
     # 4. FINISH — device flushes the tail, sets the boot partition, and reboots
-    #    (expect a disconnect). SUCCESS is 1 byte; ERROR is 2 bytes [0x04, err].
+    #    (expect a disconnect). Dispatch on byte 0: 0x03 SUCCESS (1 B on Edge,
+    #    4 B zero-padded on earclip); ERROR = [0x04, err] (+2 pad bytes on earclip).
     await client.write_gatt_char(EDGE_CTRL, bytes([0xA9, 0x00]), response=True)
     frame = await expect(timeout=30.0)
     assert frame[0] == 0x03, f'expected SUCCESS, got {frame.hex()}'
@@ -1765,19 +1799,25 @@ async function sendChunks(cD /* 0xFF02 */, data) {
     await cD.writeValueWithoutResponse(data.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE));
   }
 }
-// 1. START with the image size (u32 little-endian; [0xA8, 0x00] = legacy full-slot erase):
-//      const start = new DataView(new ArrayBuffer(5));
-//      start.setUint8(0, 0xA8); start.setUint32(1, image.byteLength, true);
-//      await cC.writeValueWithResponse(start.buffer);          → wait for 1-byte 0x01 READY
+// 1. START — branch on device type (the earclip accepts ONLY exactly-2-byte control
+//    writes: a 5-byte START rejects with an ATT invalid-length error, and the earclip
+//    has no image-sized-erase path at all):
+//      Edge:    const start = new DataView(new ArrayBuffer(5));
+//               start.setUint8(0, 0xA8); start.setUint32(1, image.byteLength, true);  // u32 LE size
+//               ([0xA8, 0x00] = Edge legacy full-slot erase)
+//      Earclip: const start = new Uint8Array([0xA8, 0x00]);
+//      await cC.writeValueWithResponse(start);   → wait for byte 0 === 0x01 READY
+//                                                  (1 B on Edge, 4 B zero-padded on earclip)
 // 2. per FULL 4 KB page: sendChunks(cD, page) → wait for 7-byte 0x06 PAGE_CRC, then:
 //      const devCrc = frameDv.getUint32(3, false);             // page# AND CRC32 are BIG-endian (§6.4)
 //      devCrc === crc32(page) ? cC.write([0xAD, 0x01]) /*commit*/ : cC.write([0xAD, 0x00]) /*resend*/
 //    → 0x07 PAGE_OK (next page) | 0x08 PAGE_RESEND (page discarded — resend the WHOLE page)
 // 3. trailing partial page: sendChunks(cD, tail) — no PAGE_CRC handshake for a partial page
-// 4. cC.write([0xA9, 0x00]) FINISH → 1-byte 0x03 SUCCESS (device reboots) | 2-byte [0x04, err] ERROR
+// 4. cC.write([0xA9, 0x00]) FINISH → byte 0 === 0x03 SUCCESS (1 B on Edge, 4 B zero-padded on
+//    earclip; device reboots) | byte 0 === 0x04 ERROR: [0x04, err] (2 B Edge / 4 B earclip)
 ```
 
-> **Do NOT treat a 5–10 second silence on `0xFF03` mid-OTA as a stall.** When the Edge erases its update partition at OTA begin (an image-sized region), the radio can be blocked for **well past 19 seconds** on worn flash. The **32-second** supervision timeout (the BLE max) is set for exactly this reason. Don't disconnect until you've waited at least 35 s with no progress.
+> **Do NOT treat a 5–10 second silence on `0xFF03` mid-OTA as a stall.** When the Edge erases its update partition at OTA begin, the radio can be blocked — with the legacy full-slot erase (`[0xA8, 0x00]`, ~1.5 MB) for 6–19 s, and **well past 19 seconds** on worn flash. The size-hinted `0xA8` start ([§6.3](#63-opcodes-write-to-0xff01-as-opcode-param)) erases only an image-sized region and shortens the stall considerably, but the **32-second** supervision timeout (the BLE max) is set to survive the slow path. Don't disconnect until you've waited at least 35 s with no progress. (This applies to both devices — the earclip's `OTA_SIZE_UNKNOWN` begin can stall the same way.)
 
 ---
 
@@ -1794,7 +1834,7 @@ The wire protocol is identical across clients, but Web Bluetooth (Chrome / Edge 
 - **Foreground only.** A backgrounded/hidden tab throttles timers and can stop delivering notifications — there is no Web Bluetooth background mode. Expect drop-outs when the tab isn't visible and re-anchor any beat/sample clocks after a gap.
 - **Browser support.** Chrome / Edge / Brave on desktop + Android only. **No Firefox, no Safari, no iOS browser** (iOS has no Web Bluetooth).
 - **Permission caching + `device.forget()`.** The browser caches an accepted device (~30 s after disconnect) and re-matches it on the next `requestDevice()` without prompting. If a device's GATT cache goes stale (the "needs multiple Forget+Connect cycles" symptom), call `device.forget()` (Chrome 114+) to release the grant.
-- **`writeValueWithResponse` vs `WithoutResponse`.** Use `WithoutResponse` for the high-rate paths (OTA data chunks, the `0xA5` duty stream, per-beat `0xCA` on the legacy path) and `WithResponse` where you need ordering / back-pressure.
+- **`writeValueWithResponse` vs `writeValueWithoutResponse`.** On these devices, write-without-response exists **only on the `0xFF02` OTA data characteristic** — reserve `writeValueWithoutResponse` for OTA data chunks. Everything else — all `0xFF01` commands, the `0xA5` duty stream, per-beat `0xCA` on the legacy path, and the earclip's CONFIG_WRITE/MODE/PEER_ROLE — must use `writeValueWithResponse`: `0xFF01` does not advertise the write-without-response property, and Web Bluetooth rejects `writeValueWithoutResponse` with `NotSupportedError` when the property bit is absent.
 - **One write at a time.** A `writeValue*` call rejects if another GATT operation on the characteristic is still in flight — serialize commands **and** the duty stream through one promise queue (the serialization rule in [§4.3](#43-control-characteristic-0xff01--command-opcodes)).
 
 ```js
@@ -1812,7 +1852,7 @@ button.addEventListener('click', async () => {
 - **Windows may strip 16-bit service UUIDs from advertisements** entirely — always filter by device name, never by service UUID ([§2.2](#22-javascript-web-bluetooth)).
 - **Windows / WinRT scan cadence.** The WinRT backend surfaces advertisements in batches, and a freshly woken Edge (100–200 ms advertising interval) can take several seconds to appear. Scan with `timeout=10–15 s` and retry once before telling the user to tap the magnet — a 3-second scan will produce false "not found" results.
 - **Notify callbacks must not block.** bleak invokes your notification callback on the event loop (it accepts both sync and async callables). Never sleep or do heavy work inside it — push the payload onto an `asyncio.Queue` and process elsewhere. This is exactly the pattern the OTA loop in [§6.8](#68-python--complete-ota-loop-bleak) uses.
-- **`response=True` for control writes.** Always write the Edge control characteristic (`0xFF01`) and earclip CONFIG_WRITE/MODE/PEER_ROLE with `response=True`: you get ordering, back-pressure, and an exception when the earclip rejects a bad config. Reserve `response=False` for OTA data chunks (and per-beat `0xCA` on the legacy path).
+- **`response=True` for control writes.** Always write the Edge control characteristic (`0xFF01`) and earclip CONFIG_WRITE/MODE/PEER_ROLE with `response=True`: you get ordering, back-pressure, and an exception when the earclip rejects a bad config. Reserve `response=False` for the `0xFF02` OTA data chunks **only** — the one characteristic that exposes write-without-response. `0xFF01` does not, so `response=False` there (including the `0xA5` duty stream and per-beat `0xCA`) raises NotSupported on BlueZ and is unreliable on WinRT.
 - **Reconnecting after the 2-minute teardown.** Once the Edge powers its radio down, `BleakClient.connect()` against a cached `BLEDevice` just times out. Catch the timeout/`BleakError`, prompt the user to tap the magnet, and go back to **scanning** — don't retry connect in a loop against the stale device object.
 - **Use full 128-bit UUID strings.** bleak wants `'0000ff01-0000-1000-8000-00805f9b34fb'`, not `0xFF01` — expand 16-bit UUIDs with the SIG base as in [§2.1](#21-python-bleak).
 - **One characteristic, one subscription.** The Edge's `0xFF03` multiplexes telemetry, relay frames, and OTA status; register a single dispatcher callback ([§4.4](#44-status-characteristic-0xff03--notification-multiplexer)) rather than starting/stopping notify around each operation.
@@ -1832,11 +1872,12 @@ button.addEventListener('click', async () => {
 | MODE write succeeds but format unchanged | Wrote to the wrong characteristic UUID | Verify you're using `71db6de8-…` (earclip) — not `0xFF01` |
 | Notifications stop after a few seconds | Forgot to enable the CCCD | `start_notify()` (bleak) / `startNotifications()` (Web Bluetooth) for every notify characteristic |
 | Garbled CONFIG read | Skipped CRC verification | Validate the last 2 B with CRC-16-CCITT-FALSE over the first `len − 2` bytes (72 B for v4, 48 B for v3) |
-| Coherence packets always show `n_ibis_used = 0` | The legacy pipeline isn't receiving beats — on stock builds the earclip central is compile-disabled ([§4.7](#47-the-edge-as-relay)) | Feed beats via `0xCA` if you're using the legacy pipeline ([§4.8](#48-legacy-on-board-coherence-pipeline-unused)) — or ignore `0xF2` entirely; app-side processing doesn't need it. On a relay-enabled build: check the latest `0xF6` frame; if `linked=0`, send `0xC1` and let the Edge re-pair |
+| No `0xF2` coherence frames arrive at all (while other `0xFF03` traffic flows) | The legacy pipeline isn't receiving beats — on stock builds the earclip central is compile-disabled ([§4.7](#47-the-edge-as-relay)) | Feed beats via `0xCA` if you're using the legacy pipeline ([§4.8](#48-legacy-on-board-coherence-pipeline-unused)) — or ignore `0xF2` entirely; app-side processing doesn't need it. On a relay-enabled build: check the latest `0xF6` frame; if `linked=0`, send `0xC1` and let the Edge re-pair |
 | `0xF4`/`0xF5` frames never arrive even with `0xF6 linked=1` | Earclip has no skin contact / no signal | Confirm with earclip BATTERY notify or SQI; the raw stream needs `0xC4 1` enabled |
 | Client stuck at BATCHED notify cadence even after writing PEER_ROLE | Wrote PEER_ROLE *after* enabling notifies | Re-order: write `[0x01]` to PEER_ROLE first, then subscribe to IBI |
 | Earclip CONFIG read returns 74 B but parser expects 50 B (or 58 B) | Parser stuck on an older `config_version` | Branch on `config_version` (offset 0): `≤2` legacy 56-B struct, `3` 48-B struct, `4` 72-B struct. The first 48 bytes of v3 and v4 are identical, so a v3-only parser can read everything it knows from a v4 frame by ignoring bytes 48..71 |
-| Health telemetry `ble_send_errors` climbing | Client overflowing the device's send queue | Slow down command writes; check for tight write loops |
+| Health telemetry `ble_send_errors` climbing | Device notifications failing to send (congested/degraded link) — the counter tracks failed device→client NOTIFY sends, not client writes | Check link quality/RSSI and connection interval; ensure the client is connected and subscribed and the link isn't saturated |
+| Lens mode changes mid-session without any app write (e.g. sudden 10 Hz strobing) | A magnet tap cycled the standalone program — gestures stay live while a client is connected ([§4.1.1](#411-standalone-programs--magnet-gestures)) | Watch `led_mode` (byte 20) in the 1 Hz `0xF3` frame to detect the takeover and re-assert your mode; instruct users not to tap the magnet mid-session |
 | Earclip `firmware_revision` reads as an empty string | Read attempted before service discovery settled | Read DIS strings after the connection is fully established, not immediately on connect |
 | RAW_PPG never fires | `data_format` is `IBI_ONLY` | Write MODE to set `data_format = 1` or `2` |
 | Lens visibly "steps" on at low feedback values | The duty→opacity floor: duty 1 is already visibly tinted | Map your signal onto `1..100` knowing 0→1 is a hard step ([§4.6.4](#464-lens-opacity-is-not-linear--the-dutyopacity-floor-fw--4154)) |
@@ -1860,6 +1901,7 @@ EARCLIP — Custom Narbis service
   CONFIG_WRITE   129fbe56-cbd6-4f52-957b-d80834d6abf3   write           (74 B in v4; was 50 B in v3)
   MODE           71db6de8-5bff-480f-8db1-0d01c90d17d0   write           (2 B)
   PEER_ROLE      e987719a-26a6-48d4-b8e9-128994e62e6c   write           (1 B)
+  FACTORY_RESET  c0e221b1-1633-0f9d-364a-7e47a8d9c411   write           (4 B, destructive — §3.1)
   DIAGNOSTICS    31d99572-bf8a-4658-828e-4f7c138ca722   read* + notify
 
   * read returns a 0-byte value on these — don't poll; only CONFIG returns data on read (§3.1)
@@ -1889,6 +1931,7 @@ EDGE — Single custom service
                                                relay packets 0xF4..0xF9 (relay-enabled builds)
                                                OTA codes 0x01..0x08
     PPG Stream                        0xFF04   read + notify
+                                               (not emitted on current fw — §4.5)
 
 OTA — Shared between Edge and Earclip (same UUIDs)
   Service                             0x00FF
@@ -1918,14 +1961,14 @@ OTA — Shared between Edge and Earclip (same UUIDs)
 
 ### 9.3 Firmware feature/version matrix
 
-**The Edge exposes no DIS — you cannot read its firmware version over BLE.** Send version-gated opcodes unconditionally and rely on graceful fallback ([§4.6.7](#467-backward-compatibility--version)).
+**The Edge exposes no DIS**, so there is no version characteristic to read — but firmware ≥ 4.12.1 announces its build as a `0xF1` log frame on `0xFF03` the moment you enable status notifications: `Narbis fw v<version> test=<0|1> mode=<n>` (e.g. `Narbis fw v4.15.6-strobe-sync test=0 mode=0`). Parse the token after `v` — take its leading `major.minor.patch` numeric prefix; a build suffix like `-strobe-sync` may follow ([§4.4.2](#442-log-string-0xf1--variable)). Use that line for version gating; if it never arrives (fw < 4.12.1), fall back to sending version-gated opcodes unconditionally and relying on graceful fallback ([§4.6.7](#467-backward-compatibility--version)).
 
 | Feature | Minimum glasses fw | Behaviour on older firmware |
 |---|---|---|
 | `0xBA` breathe-sync | 4.15.5 | ignored (unknown opcode) |
 | `0xB0 0x01` breathe+strobe | 4.15.6 | plain breathe |
 | duty→opacity floor remap ([§4.6.4](#464-lens-opacity-is-not-linear--the-dutyopacity-floor-fw--4154)) | 4.15.4 | no floor remap |
-| `0xF3` led bytes (`led_mode` / `led_duty`) | 4.15.4 | 20-byte frame without them |
+| `0xF3` led bytes (`led_mode` / `led_duty`) | 4.15.3 (late builds only — added mid-4.15.3, commit 049105c) | 20-byte frame without them; discriminate by frame length (20 vs 22 B), not by version |
 | `0xFA` link quality | 4.15.3 | not emitted |
 | `0xF9` per-beat relay | 4.15.2 | not emitted |
 | `0xAB` 3-byte deci-Hz form | 4.14.41 | only the integer-Hz 2-byte form |

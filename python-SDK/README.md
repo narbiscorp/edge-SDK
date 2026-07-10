@@ -31,7 +31,7 @@ asyncio.run(main())
 
 ## Features
 
-- Simple opacity control (0-255, streamable up to ~20 Hz)
+- Simple opacity control (0-255, streamable — ~12 Hz recommended, ~20 Hz ceiling)
 - On-board breathe engine (rate, inhale ratio, holds, waveform, optional strobe modulation)
 - Breath phase-lock (`sync_breath`) for app-paced, fractional-rate breathing
 - Strobe mode (1-50 Hz, 10-90% duty)
@@ -183,7 +183,7 @@ async def find_devices():
 
 ### Real-time Control (Research/Neurofeedback)
 
-Map a continuous signal to opacity at up to ~20 Hz:
+Map a continuous signal to opacity at ~12 Hz (production-proven rate; ~20 Hz is the tolerated ceiling):
 
 ```python
 async def neurofeedback_loop():
@@ -197,7 +197,7 @@ async def neurofeedback_loop():
             opacity = int(alpha_power * 255)
             await glasses.set_opacity(opacity)
 
-            await asyncio.sleep(0.05)  # 20 Hz update rate
+            await asyncio.sleep(1/12)  # ~12 Hz update rate (≤20 Hz tolerated)
 ```
 
 For breathing entrainment, do **not** stream opacity to draw a waveform — use the
@@ -224,7 +224,7 @@ Full method → wire-byte mapping in [docs/API_REFERENCE.md](docs/API_REFERENCE.
 | `await glasses.clear()` | Fully transparent |
 | `await glasses.dark()` | Fully opaque |
 | `await glasses.set_static(0-100)` | Static mode at duty % |
-| `await glasses.set_brightness(0-100)` | Max brightness (persisted) |
+| `await glasses.set_brightness(0-100)` | Lens level / breathe depth (persisted; same firmware variable `set_static` writes — not a ceiling) |
 | `await glasses.sleep()` | Enter deep sleep |
 | `await glasses.factory_reset()` | Reset persisted settings |
 
