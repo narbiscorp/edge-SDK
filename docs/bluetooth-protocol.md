@@ -36,9 +36,8 @@
 | MCU | ESP32 classic | ESP32-C6 |
 | BLE stack | NimBLE | NimBLE |
 | BLE roles | **peripheral + central** — the central (earclip relay) is **compile-disabled on stock builds** ([§4.7](#47-the-edge-as-relay)) | peripheral, **multi-central** (up to 3 simultaneous) |
-| Custom primary service | none advertised | `a24080b2-8857-4785-b3ba-a43b66af4f28` (128-bit) |
-| Standard SIG services | none | HRS `0x180D`, Battery `0x180F`, DIS `0x180A` |
-| OTA service UUID | `0x00FF` (chars `0xFF01`–`0xFF04`) | `0x00FF` (chars `0xFF01`–`0xFF03`) |
+| Primary service | `0x00FF` (chars `0xFF01`–`0xFF04`) — its **only** service, and it is **not included in the advertising payload**: the adv data is flags + name only, so filter by device name, not by service UUID | `a24080b2-8857-4785-b3ba-a43b66af4f28` (128-bit, advertised) — plus `0x00FF` for OTA (chars `0xFF01`–`0xFF03`) |
+| Standard SIG services | none — no HRS / Battery / DIS. (Like every BLE device, service discovery will also show the mandatory GAP `0x1800` and GATT `0x1801` — ignore them.) | HRS `0x180D`, Battery `0x180F`, DIS `0x180A` |
 | Encryption / bonding | none | none |
 | Negotiated MTU | requests 247 | requests 247 |
 | Connection interval (typical) | 20–30 ms, slave latency 1, **32 s** supervision timeout | per-central, picked from the PEER_ROLE byte: DASHBOARD → LOW_LATENCY (15–30 ms), GLASSES → BATCHED (50–100 ms) |
@@ -50,7 +49,7 @@
 > - **Earclip** uses `0x00FF` purely for OTA: `0xFF01` Control, `0xFF02` Data, `0xFF03` Status.
 > - **Edge** uses `0x00FF` for everything: `0xFF01` Control & all commands, `0xFF02` OTA Data, `0xFF03` Status & log/coherence/health notifications, `0xFF04` PPG stream.
 >
-> **Always disambiguate by advertised name.** Do not assume device type from `0x00FF` alone, and do not scan-filter on `0x00FF` expecting it to identify a device — it matches both, and some advertisements omit the service UUID entirely.
+> **Always disambiguate by advertised name.** Do not assume device type from `0x00FF` alone, and do not scan-filter on `0x00FF` expecting it to identify a device — it matches both, and the Edge never puts the service UUID in its advertising payload at all (adv data is flags + name only).
 
 ---
 
