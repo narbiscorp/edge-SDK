@@ -53,7 +53,7 @@ asyncio.run(main())
 ## Standalone Programs (no app needed)
 
 The glasses run sensor-free programs on their own, cycled by a short magnet tap
-(0.3-4 s) on the temple:
+(0.15-4 s) on the temple:
 
 | Program | Behavior |
 |---------|----------|

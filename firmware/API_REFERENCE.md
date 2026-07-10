@@ -17,6 +17,7 @@
 | Pairing/Bonding | None |
 | Idle Teardown | **2 minutes** with no client connected → full radio power-down; tap the magnet to re-arm advertising |
 | Supervision Timeout | 32 s |
+| Simultaneous Clients | **1** — advertising stops on connect; a second central cannot discover or connect while another client holds the link |
 | Write Type | Write with response |
 
 **No NACKs:** the firmware never rejects a write. Out-of-range arguments are silently clamped or dropped — validate values client-side.
@@ -51,7 +52,7 @@ Any single-byte write sets lens opacity directly:
 |--------|------|-----|-----------------|-------|
 | *(1 byte)* | Legacy opacity | 0-255 → 0-100% static duty | no | Stops current mode |
 | `0xA2` | Brightness | 0-100 % | yes | Global ceiling; takes effect immediately, does not change mode |
-| `0xA4` | Session duration | 1-60 min | yes | Device auto-sleeps when the session ends |
+| `0xA4` | Session duration | 1-60 min | yes | Device auto-sleeps when the session ends (default 30 min; persisted; timer runs from device wake — see the protocol doc's session-auto-sleep note) |
 | `0xA5` | Static mode + duty | 0-100 % | no | Enters static mode at the given duty |
 | `0xA6` | Start strobe mode | ignored (send `0x00`) | no | Uses stored frequency/duty (`0xAB`/`0xAC`) |
 | `0xA7` | Sleep now | ignored (send `0x00`) | no | Immediate deep sleep |
@@ -107,7 +108,7 @@ Write: [0xBA, 0x10, 0x27, 0x28]   # 0x2710 = 10000 ms, 0x28 = 40%
 
 ## Standalone Programs (no app required)
 
-A short magnet tap (0.3-4 s) on the temple cycles the on-board programs. The lens signals a program change with N slow fade-dark pulses:
+A short magnet tap (0.15-4 s) on the temple cycles the on-board programs. The lens signals a program change with N slow fade-dark pulses:
 
 | Program | Behavior |
 |---------|----------|

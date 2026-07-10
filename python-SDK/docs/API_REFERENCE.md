@@ -21,6 +21,7 @@ For the full protocol (OTA, status/notify, PPG stream), see the
 | Write type | Write with response |
 | Idle teardown | **2 minutes** with no client connected → full radio power-down; magnet tap re-arms advertising |
 | Supervision timeout | 32 s |
+| Simultaneous clients | **1** — advertising stops on connect; a second central cannot discover or connect while another client holds the link |
 | NACKs | None — firmware silently clamps/drops bad args; the SDK validates client-side |
 
 ---
@@ -49,7 +50,7 @@ sends a single byte.
 | Method | Wire bytes | Range (SDK clamps) | Persisted (NVS) |
 |--------|-----------|--------------------|-----------------|
 | `set_brightness(percent)` | `[0xA2, pct]` | 0-100% | yes |
-| `set_duration(minutes)` | `[0xA4, min]` | 1-60 min (auto-sleep at end) | yes |
+| `set_duration(minutes)` | `[0xA4, min]` | 1-60 min (auto-sleep at end; default 30 min; persisted; timer runs from device wake — see protocol doc session-auto-sleep note) | yes |
 | `set_static(duty)` | `[0xA5, duty]` | 0-100% | no |
 | `set_strobe_frequency(hz)` | `[0xAB, hz]` | 1-50 Hz | yes |
 | `set_strobe_duty(percent)` | `[0xAC, pct]` | 10-90% | yes |
@@ -115,7 +116,7 @@ configure the renderer and set the auto-sleep duration.
 |--------|------|-----|-----------------|------------|
 | *(1 byte)* | Legacy opacity | 0-255 → 0-100% static duty; stops current mode | no | `set_opacity` |
 | `0xA2` | Brightness | 0-100% | yes | `set_brightness` |
-| `0xA4` | Session duration | 1-60 min (auto-sleep at end) | yes | `set_duration` |
+| `0xA4` | Session duration | 1-60 min (auto-sleep at end; default 30 min; timer runs from device wake — see protocol doc session-auto-sleep note) | yes | `set_duration` |
 | `0xA5` | Static mode + duty | 0-100% | no | `set_static` |
 | `0xA6` | Start strobe mode | arg ignored (send 0) | no | `start_strobe` |
 | `0xA7` | Sleep now | arg ignored (send 0) | no | `sleep` |

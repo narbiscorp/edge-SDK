@@ -62,7 +62,7 @@ blocks the device chooser otherwise.
 ## Standalone Programs (no app needed)
 
 The glasses also run sensor-free on-board programs, cycled by a short magnet tap
-(0.3–4 s) on the temple:
+(0.15–4 s) on the temple:
 
 1. **BREATHE** — 6 BPM sine, lens tint follows the waveform (boot default)
 2. **BREATHE+STROBE** — 10 Hz strobe with dark-phase duty modulated by the breathing waveform

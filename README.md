@@ -172,7 +172,7 @@ Full protocol (including OTA and legacy opcodes): [Protocol reference](docs/blue
 
 ### Standalone programs
 
-The glasses work without any app. A short magnet tap (0.3-4 s) on the temple cycles through three sensor-free programs; the lens signals the new program with N slow fade-dark pulses:
+The glasses work without any app. A short magnet tap (0.15-4 s) on the temple cycles through three sensor-free programs; the lens signals the new program with N slow fade-dark pulses:
 
 | Program | Behavior |
 |---------|----------|
