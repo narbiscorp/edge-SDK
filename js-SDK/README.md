@@ -22,12 +22,20 @@ import { Glasses } from 'edge-glasses';
 
 const glasses = new Glasses();
 
-// Must be called from a user gesture (button click)
+// The core pattern: a wearable screen dimmer. Map ANY protocol's feedback
+// value (0..1) to lens tint -- dim when out of condition, clear when in.
+// Must be called from a user gesture (button click).
 document.getElementById('connect')?.addEventListener('click', async () => {
   await glasses.connect();
-  await glasses.setOpacity(128);           // 50% dark, static
-  await glasses.startBreathe({ bpm: 6 });  // on-board breathe engine
+  await glasses.setDuration(60);                         // session guard: no auto-sleep for 60 min
+  setInterval(async () => {
+    const duty = Math.round((1 - getFeedback()) * 100);  // your protocol's 0..1 feedback value
+    await glasses.setStatic(duty);                       // 0 = clear, 100 = fully dark
+  }, 1000 / 12);                                         // ~12 Hz
 });
+
+// Paced breathing, when the protocol calls for it:
+//   await glasses.startBreathe({ bpm: 6 });
 ```
 
 ## Browser Support

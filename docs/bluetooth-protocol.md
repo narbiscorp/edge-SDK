@@ -31,7 +31,7 @@
 
 ## Quickstart — make the lens respond to your signal
 
-The minimal path for a third party whose software already produces a feedback value (0..1) and wants the lens to track it.
+The minimal path for a third party whose software already produces a feedback value (0..1) and wants the lens to track it. This is the **wearable screen-dimmer** pattern: classic neurofeedback dims the training display when the trainee falls out of condition and clears it when they're in condition — the Edge does the same on the lens itself, so it drops into **any protocol** (SMR, alpha/theta, HEG, EMG down-training, HRV…) with no changes to the protocol logic.
 
 1. **Wake the glasses** — magnet tap on the temple. You get a ~2-minute advertising window.
 2. **Scan** for the exact name `Narbis_Edge` (the service UUID is not advertised) and connect.
@@ -1141,7 +1141,7 @@ Your app owns the feedback algorithm and tells the lens what to do. This section
 
 #### 4.6.1 Continuous-opacity feedback — the biofeedback pattern
 
-The primary third-party integration pattern: your software produces a feedback value and the lens tracks it continuously.
+The primary third-party integration pattern: your software produces a feedback value and the lens tracks it continuously — a **wearable screen dimmer**. Anywhere a protocol would dim/brighten the training display (out of condition → dim, in condition → clear), map that same value to lens duty instead; threshold-style binary reward and proportional analog mappings both reduce to this one write loop (worked example: `python-SDK/examples/screen_dimmer.py`).
 
 - **Primary method:** stream `[0xA5, duty]` (duty 0–100) at **~10–12 Hz** — the production dashboard uses 12 Hz.
 - **Decimate** your source signal (e.g. a 256 Hz EEG index) down to that rate; map 0..1 → 0..100.

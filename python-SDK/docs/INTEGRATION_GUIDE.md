@@ -34,7 +34,7 @@ EDGE Glasses can be controlled from any system that can send BLE commands. The S
 
 | Your signal | Drive the glasses with |
 |-------------|------------------------|
-| Continuous scalar (EEG alpha, GSR, an HRV score…) | `set_opacity()` streamed at ~12 Hz (≤ 20 Hz ceiling), or `set_static()` for slower updates |
+| Continuous scalar (EEG alpha, GSR, an HRV score…) | `set_opacity()` / `set_static()` streamed at ~12 Hz (≤ 20 Hz ceiling) — the **wearable screen-dimmer** pattern; drop-in for any protocol's dim-when-out-of-condition feedback (`examples/screen_dimmer.py`) |
 | Breathing entrainment / pacing | The **on-board breathe engine** (`start_breathe()`), optionally phase-locked with `sync_breath()` once per breath at the cycle boundary. Do **not** stream per-tick opacity to draw a breathing waveform. |
 | HRV coherence training | Compute metrics **app-side** (e.g. RMSSD from Polar RR intervals), then map the result to `set_opacity()` or use it to pace `sync_breath()` |
 

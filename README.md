@@ -58,6 +58,8 @@ EDGE glasses feature LCD lenses that dynamically change opacity via Bluetooth. A
 
 The glasses advertise as **`Narbis_Edge`**. If they don't show up in a scan, tap the magnet on the temple — the radio powers down after 2 minutes with no client connected.
 
+The core integration is **direct tint control — a wearable screen dimmer**. Classic neurofeedback dims the training display when the trainee falls out of condition and clears it when they're in condition; the Edge does the same thing on the lens itself, so it drops into **any protocol** (SMR, alpha/theta, HEG, EMG down-training, HRV…) wherever your software can emit a feedback value.
+
 ### Python
 ```bash
 pip install edge-glasses
@@ -69,8 +71,15 @@ import asyncio
 
 async def main():
     async with Glasses() as glasses:
-        await glasses.set_opacity(128)        # 50% dark
-        await glasses.session_meditate(10)    # 10-min breathe session, 6 BPM
+        await glasses.set_duration(60)          # session guard: no auto-sleep for 60 min
+        last = -1
+        while True:
+            reward = get_feedback()             # your protocol's feedback value, 0..1
+            duty = round((1 - reward) * 100)    # in condition → clear; out → dim
+            if duty != last:                    # coalesce unchanged values
+                await glasses.set_static(duty)
+                last = duty
+            await asyncio.sleep(1/12)           # ~12 Hz
 
 asyncio.run(main())
 ```
@@ -84,16 +93,19 @@ npm install edge-glasses
 import { Glasses } from 'edge-glasses';
 
 const glasses = new Glasses();
-await glasses.connect();
-await glasses.setOpacity(128);
-await glasses.sessionMeditate(10);
+await glasses.connect();                  // must come from a user gesture
+await glasses.setDuration(60);            // session guard
+setInterval(async () => {
+  const duty = Math.round((1 - getFeedback()) * 100);  // dim when out of condition
+  await glasses.setStatic(duty);
+}, 1000 / 12);                            // ~12 Hz
 ```
 
-Or drive the breathe engine directly:
+Drop-in example: [screen_dimmer.py](python-SDK/examples/screen_dimmer.py). The on-board breathe engine and fixed-parameter sessions are there when a protocol calls for paced breathing:
 
 ```python
 await glasses.start_breathe(bpm=6, inhale_pct=40)   # paced breathing, on-board
-await glasses.sync_breath(10000, 40)                # optional phase-lock, once per breath
+await glasses.session_meditate(10)                  # or a 10-min preset
 ```
 
 ## Integrations
@@ -128,6 +140,7 @@ Works with popular biosignal platforms and research equipment. Your computer run
 ### Examples
 | Example | Description |
 |---------|-------------|
+| [screen_dimmer.py](python-SDK/examples/screen_dimmer.py) | **Wearable screen dimmer** — tint from any protocol's feedback value (threshold or proportional) |
 | [openbci_feedback.py](python-SDK/examples/openbci_feedback.py) | EEG alpha neurofeedback |
 | [muse_eeg.py](python-SDK/examples/muse_eeg.py) | Meditation/focus training |
 | [polar_hrv.py](python-SDK/examples/polar_hrv.py) | HRV coherence training |

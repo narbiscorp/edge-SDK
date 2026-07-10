@@ -22,9 +22,21 @@ import asyncio
 from edge_glasses import Glasses
 
 async def main():
-    # Connect and start 6 BPM guided breathing
+    # The core pattern: a wearable screen dimmer. Map ANY protocol's feedback
+    # value (0..1) to lens tint -- dim when out of condition, clear when in.
     async with Glasses() as glasses:
-        await glasses.start_breathe(bpm=6)
+        await glasses.set_duration(60)          # session guard: no auto-sleep for 60 min
+        last = -1
+        while True:
+            reward = get_feedback()             # your protocol's feedback value, 0..1
+            duty = round((1 - reward) * 100)    # 0 = clear, 100 = fully dark
+            if duty != last:                    # coalesce unchanged values
+                await glasses.set_static(duty)
+                last = duty
+            await asyncio.sleep(1/12)           # ~12 Hz
+
+    # Paced breathing, when the protocol calls for it:
+    #   await glasses.start_breathe(bpm=6)
 
 asyncio.run(main())
 ```
@@ -70,6 +82,7 @@ Works natively with OpenBCI, brainflow, LSL, and any BLE pipeline.
 
 | Platform | Example | Description |
 |----------|---------|-------------|
+| **Any protocol** | `examples/screen_dimmer.py` | **Wearable screen dimmer** — tint from any 0..1 feedback value (threshold or proportional) |
 | **OpenBCI** | `examples/openbci_feedback.py` | EEG neurofeedback via brainflow |
 | **Muse** | `examples/muse_eeg.py` | Meditation/focus training |
 | **Polar** | `examples/polar_hrv.py` | HRV coherence training |
