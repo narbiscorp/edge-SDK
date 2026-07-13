@@ -17,6 +17,8 @@ npm install edge-glasses
 
 ## Quick Start
 
+**Real-time opacity streaming — a drop-in screen-dimmer replacement.** Hold one connection open and write the lens opacity whenever your signal updates: `setStatic(duty)`, `duty` 0 (clear) → 100 (fully dark) — the same 0–100% your on-screen dimmer already produces. Stream at ~12 Hz (decimate faster signals), coalesce unchanged values, and let the SDK serialize the writes.
+
 ```typescript
 import { Glasses } from 'edge-glasses';
 

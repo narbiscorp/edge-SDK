@@ -17,6 +17,8 @@ pip install edge-glasses
 
 ## Quick Start
 
+**Real-time opacity streaming — a drop-in screen-dimmer replacement.** Hold one connection open and write the lens opacity whenever your signal updates: `set_static(duty)`, `duty` 0 (clear) → 100 (fully dark) — the same 0–100% your on-screen dimmer already produces. Stream at ~12 Hz (decimate faster signals) and skip unchanged values.
+
 ```python
 import asyncio
 from edge_glasses import Glasses

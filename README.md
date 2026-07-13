@@ -61,6 +61,15 @@ The glasses advertise as **`Narbis_Edge`**. If they don't show up in a scan, tap
 
 The core integration is **direct tint control — a wearable screen dimmer**. Classic neurofeedback dims the training display when the trainee falls out of condition and clears it when they're in condition; the Edge does the same thing on the lens itself, so it drops into **any protocol** (SMR, alpha/theta, HEG, EMG down-training, HRV…) wherever your software can emit a feedback value.
 
+**How real-time control works.** Open one BLE connection and hold it. Every time your feedback signal updates, write the lens opacity — a single 2-byte command, `set_static(duty)`, where `duty` runs **0 (clear) → 100 (fully dark)**. That's the same 0–100% dim level your on-screen dimmer already computes, so you point the existing signal at the lens instead of the screen. The streaming contract:
+
+- **Rate:** write at **~12 Hz** (the production-proven rate; 20 Hz is the ceiling). If your signal is faster — a 256 Hz EEG index, say — decimate to ~12 Hz; you don't need a write per sample.
+- **Coalesce:** skip the write when `duty` hasn't changed since the last one — the lens holds its state, so only send real changes.
+- **One in flight:** wait for each write to complete before sending the next (the SDK serializes this for you; on raw BLE, don't overlap writes to the control characteristic).
+- **Latency:** end-to-end signal→lens latency is ~1 connection interval (20–30 ms) plus your processing — well under the perceptual threshold for a dimmer.
+
+The loop below is a complete screen-dimmer replacement — swap `get_feedback()` for your protocol's reward/inhibit value and you're done.
+
 ### Python
 ```bash
 pip install edge-glasses
