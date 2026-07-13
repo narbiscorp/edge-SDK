@@ -44,7 +44,7 @@ EDGE glasses feature LCD lenses that dynamically change opacity via Bluetooth. A
 | MCU | ESP32-PICO-D4 |
 | Connectivity | Bluetooth Low Energy 4.0+ |
 | Lens Control | PWM-driven LCD opacity |
-| Power | Li-ion battery, ~8hr active |
+| Power | Li-ion battery, ~2–4 hr active |
 | Sleep Current | ~16 µA |
 
 ## Repositories
