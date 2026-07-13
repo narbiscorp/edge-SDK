@@ -84,6 +84,7 @@ Works natively with OpenBCI, brainflow, LSL, and any BLE pipeline.
 |----------|---------|-------------|
 | **Any protocol** | `examples/screen_dimmer.py` | **Wearable screen dimmer** — tint from any 0..1 feedback value (threshold or proportional) |
 | **OpenBCI** | `examples/openbci_feedback.py` | EEG neurofeedback via brainflow |
+| **Evoked potentials** | `examples/evoked_potential.py` | Lens as SSVEP / VEP / P300 visual stimulator |
 | **Muse** | `examples/muse_eeg.py` | Meditation/focus training |
 | **Polar** | `examples/polar_hrv.py` | HRV coherence training |
 | **LSL** | `examples/lsl_integration.py` | Lab Streaming Layer bridge |

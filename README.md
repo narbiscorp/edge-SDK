@@ -26,6 +26,7 @@ EDGE glasses feature LCD lenses that dynamically change opacity via Bluetooth. A
 | **rPPG** | Camera-based heart rate, stress monitoring |
 | **GSR/EDA** | Arousal-based feedback, stress response |
 | **Respiration** | Breathing rate entrainment, paced breathing |
+| **Evoked Potentials** | Lens as the visual *stimulator* — SSVEP flicker, transient VEP / P300 flash cues ([example](python-SDK/examples/evoked_potential.py)) |
 | **BCI Research** | Motor imagery, SSVEP, P300 paradigms |
 
 ### Why EDGE?
@@ -142,6 +143,7 @@ Works with popular biosignal platforms and research equipment. Your computer run
 |---------|-------------|
 | [screen_dimmer.py](python-SDK/examples/screen_dimmer.py) | **Wearable screen dimmer** — tint from any protocol's feedback value (threshold or proportional) |
 | [openbci_feedback.py](python-SDK/examples/openbci_feedback.py) | EEG alpha neurofeedback |
+| [evoked_potential.py](python-SDK/examples/evoked_potential.py) | Lens as SSVEP / VEP / P300 visual stimulator (with LSL markers) |
 | [muse_eeg.py](python-SDK/examples/muse_eeg.py) | Meditation/focus training |
 | [polar_hrv.py](python-SDK/examples/polar_hrv.py) | HRV coherence training |
 | [lsl_integration.py](python-SDK/examples/lsl_integration.py) | Any LSL-compatible source |
