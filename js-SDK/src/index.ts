@@ -7,7 +7,7 @@
  * firmware's breathe / static / strobe renderer.
  *
  * @module edge-glasses
- * @version 2.0.0
+ * @version 2.1.0
  */
 
 // BLE UUIDs
@@ -478,6 +478,89 @@ export class Glasses {
   async sessionSleep(minutes = 15): Promise<void> {
     await this.setDuration(minutes);
     await this.startBreathe({ bpm: 4, waveform: Waveform.Sine });
+  }
+
+  // -------------------------------------------------------------------------
+  // Real-time Feedback Streaming
+  // -------------------------------------------------------------------------
+
+  /**
+   * Open a plug-and-play real-time lens stream (the screen-dimmer pattern).
+   *
+   * Returns a FeedbackStream: push a value from any callback at any rate via
+   * feed() / feedReward(); an internal writer updates the lens at `rateHz`
+   * (default ~12 Hz, the production-proven rate; capped at 20 Hz), coalescing
+   * unchanged values and keeping exactly one BLE write in flight. Replaces a
+   * hand-rolled decimate/coalesce/serialize loop.
+   *
+   * ```ts
+   * const stream = glasses.startFeedbackStream();
+   * yourPipeline.onUpdate((v) => stream.feedReward(v)); // 0..1, any rate
+   * // ...
+   * await stream.stop(); // stops the writer and clears the lens
+   * ```
+   */
+  startFeedbackStream(rateHz = 12): FeedbackStream {
+    return new FeedbackStream(this, rateHz);
+  }
+}
+
+/**
+ * Push-style real-time lens control — a wearable screen dimmer.
+ *
+ * Created via Glasses.startFeedbackStream(). Call feed()/feedReward() from
+ * anywhere at any rate; the internal writer decimates to the stream rate,
+ * skips unchanged values, and never overlaps BLE writes (a busy guard drops
+ * ticks while a write is in flight; a failed write resets the coalesce key
+ * so the next tick retries).
+ */
+export class FeedbackStream {
+  private duty: number | null = null;   // latest requested duty 0-100
+  private lastSent = -1;
+  private busy = false;
+  private timer: ReturnType<typeof setInterval>;
+
+  constructor(private glasses: Glasses, rateHz = 12) {
+    const hz = Math.max(1, Math.min(20, rateHz)); // 20 Hz ceiling
+    this.timer = setInterval(() => void this.tick(), 1000 / hz);
+  }
+
+  /** Request a lens duty: 0 = clear … 100 = fully dark. Any call rate is fine. */
+  feed(duty: number): void {
+    this.duty = clamp(Math.round(duty), 0, 100);
+  }
+
+  /**
+   * Request tint from a 0..1 reward value (1 = in condition = clear).
+   * The classic dimmer mapping: duty = (1 - value) * 100.
+   */
+  feedReward(value: number): void {
+    const v = Math.max(0, Math.min(1, value));
+    this.feed((1 - v) * 100);
+  }
+
+  private async tick(): Promise<void> {
+    if (this.busy || this.duty === null || this.duty === this.lastSent) return;
+    this.busy = true;
+    this.lastSent = this.duty;
+    try {
+      await this.glasses.setStatic(this.lastSent);
+    } catch {
+      this.lastSent = -1;                 // failed write: retry next tick
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  /**
+   * Stop the writer. By default clears the lens — it otherwise FREEZES at
+   * the last tint (see the protocol doc, Reconnection).
+   */
+  async stop(clear = true): Promise<void> {
+    clearInterval(this.timer);
+    if (clear && this.glasses.isConnected) {
+      await this.glasses.clear();
+    }
   }
 }
 

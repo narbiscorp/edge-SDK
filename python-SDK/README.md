@@ -17,7 +17,7 @@ pip install edge-glasses
 
 ## Quick Start
 
-**Real-time opacity streaming — a drop-in screen-dimmer replacement.** Hold one connection open and write the lens opacity whenever your signal updates: `set_static(duty)`, `duty` 0 (clear) → 100 (fully dark) — the same 0–100% your on-screen dimmer already produces. Stream at ~12 Hz (decimate faster signals) and skip unchanged values.
+**Real-time opacity streaming — a drop-in screen-dimmer replacement.** Hold one connection open and push your feedback value into a `FeedbackStream`: `feed(duty)` takes the same 0 (clear) → 100 (fully dark) your on-screen dimmer already produces, `feed_reward(v)` takes a 0..1 reward value. Call them from any callback at any rate — the stream's internal writer handles the ~12 Hz decimation, unchanged-value coalescing, and write serialization for you.
 
 ```python
 import asyncio
@@ -25,17 +25,13 @@ from edge_glasses import Glasses
 
 async def main():
     # The core pattern: a wearable screen dimmer. Map ANY protocol's feedback
-    # value (0..1) to lens tint -- dim when out of condition, clear when in.
+    # value to lens tint -- dim when out of condition, clear when in.
     async with Glasses() as glasses:
-        await glasses.set_duration(60)          # session guard: no auto-sleep for 60 min
-        last = -1
-        while True:
-            reward = get_feedback()             # your protocol's feedback value, 0..1
-            duty = round((1 - reward) * 100)    # 0 = clear, 100 = fully dark
-            if duty != last:                    # coalesce unchanged values
-                await glasses.set_static(duty)
-                last = duty
-            await asyncio.sleep(1/12)           # ~12 Hz
+        await glasses.set_duration(60)                 # session guard: no auto-sleep for 60 min
+        stream = glasses.start_feedback_stream()       # 12 Hz writer -- coalesces + serializes for you
+        your_pipeline.on_update(stream.feed_reward)    # push your 0..1 feedback value, any callback, any rate
+        # or stream.feed(duty) with your dimmer's existing 0-100% value
+        await asyncio.Event().wait()                   # run until you end the session
 
     # Paced breathing, when the protocol calls for it:
     #   await glasses.start_breathe(bpm=6)
@@ -240,6 +236,7 @@ Full method → wire-byte mapping in [docs/API_REFERENCE.md](docs/API_REFERENCE.
 | `await glasses.clear()` | Fully transparent |
 | `await glasses.dark()` | Fully opaque |
 | `await glasses.set_static(0-100)` | Static mode at duty % |
+| `glasses.start_feedback_stream(rate_hz=12)` | Plug-and-play real-time stream: returns a `FeedbackStream` — `feed(duty)` / `feed_reward(0..1)` from any callback; internal writer coalesces + serializes; `await stream.stop()` clears the lens |
 | `await glasses.set_brightness(0-100)` | Lens level / breathe depth (persisted; same firmware variable `set_static` writes — not a ceiling) |
 | `await glasses.sleep()` | Enter deep sleep |
 | `await glasses.factory_reset()` | Reset persisted settings |

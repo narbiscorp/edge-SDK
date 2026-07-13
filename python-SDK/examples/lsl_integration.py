@@ -38,7 +38,10 @@ except ImportError:
     print("Warning: pylsl not installed. Run: pip install pylsl")
 
 
-BRIDGE_VERSION = "2.0.0"
+try:
+    from edge_glasses import __version__ as BRIDGE_VERSION
+except ImportError:
+    BRIDGE_VERSION = "unknown"
 
 # Control stream (what the bridge listens for)
 CONTROL_STREAM_NAME = "GlassesControl"   # default; override via constructor/CLI

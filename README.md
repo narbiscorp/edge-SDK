@@ -65,10 +65,10 @@ The core integration is **direct tint control — a wearable screen dimmer**. Cl
 
 - **Rate:** write at **~12 Hz** (the production-proven rate; 20 Hz is the ceiling). If your signal is faster — a 256 Hz EEG index, say — decimate to ~12 Hz; you don't need a write per sample.
 - **Coalesce:** skip the write when `duty` hasn't changed since the last one — the lens holds its state, so only send real changes.
-- **One in flight:** wait for each write to complete before sending the next (the SDK serializes this for you; on raw BLE, don't overlap writes to the control characteristic).
+- **One in flight:** never overlap writes to the control characteristic (on raw BLE, wait for each write to complete before sending the next).
 - **Latency:** end-to-end signal→lens latency is ~1 connection interval (20–30 ms) plus your processing — well under the perceptual threshold for a dimmer.
 
-The loop below is a complete screen-dimmer replacement — swap `get_feedback()` for your protocol's reward/inhibit value and you're done.
+**The SDKs ship this whole contract as a built-in:** `start_feedback_stream()` returns a `FeedbackStream` — call `feed_reward(value)` (0..1, 1 = in condition) or `feed(duty)` (0–100, your dimmer's existing scale) from any callback at any rate, and the stream's internal writer handles the 12 Hz decimation, coalescing, and write serialization. The snippets below are complete screen-dimmer replacements; for the hand-rolled loop or the raw-BLE byte sequence, see the [protocol doc quickstart](docs/bluetooth-protocol.md).
 
 ### Python
 ```bash
@@ -81,15 +81,11 @@ import asyncio
 
 async def main():
     async with Glasses() as glasses:
-        await glasses.set_duration(60)          # session guard: no auto-sleep for 60 min
-        last = -1
-        while True:
-            reward = get_feedback()             # your protocol's feedback value, 0..1
-            duty = round((1 - reward) * 100)    # in condition → clear; out → dim
-            if duty != last:                    # coalesce unchanged values
-                await glasses.set_static(duty)
-                last = duty
-            await asyncio.sleep(1/12)           # ~12 Hz
+        await glasses.set_duration(60)                 # session guard: no auto-sleep for 60 min
+        stream = glasses.start_feedback_stream()       # 12 Hz writer -- coalesces + serializes for you
+        your_pipeline.on_update(stream.feed_reward)    # push your 0..1 feedback value, any callback, any rate
+        # or stream.feed(duty) with your dimmer's existing 0-100% value
+        await asyncio.Event().wait()                   # run until you end the session
 
 asyncio.run(main())
 ```
@@ -103,12 +99,10 @@ npm install edge-glasses
 import { Glasses } from 'edge-glasses';
 
 const glasses = new Glasses();
-await glasses.connect();                  // must come from a user gesture
-await glasses.setDuration(60);            // session guard
-setInterval(async () => {
-  const duty = Math.round((1 - getFeedback()) * 100);  // dim when out of condition
-  await glasses.setStatic(duty);
-}, 1000 / 12);                            // ~12 Hz
+await glasses.connect();                       // must come from a user gesture
+await glasses.setDuration(60);                 // session guard
+const stream = glasses.startFeedbackStream();  // 12 Hz writer -- coalesces + serializes for you
+onFeedback((v) => stream.feedReward(v));       // push your 0..1 feedback value, any callback, any rate
 ```
 
 Drop-in example: [screen_dimmer.py](python-SDK/examples/screen_dimmer.py). The on-board breathe engine and fixed-parameter sessions are there when a protocol calls for paced breathing:
