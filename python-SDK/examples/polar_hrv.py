@@ -157,9 +157,11 @@ class PolarHRMonitor:
 class HRVCoherenceTrainer:
     """
     HRV Coherence Training with EDGE Glasses
-    
+
     Uses glasses to guide breathing for optimal HRV coherence.
-    Real-time feedback shows coherence level through opacity.
+    Coherence is computed app-side from the Polar RR intervals (the
+    firmware's on-board coherence pipeline is legacy and unused) and
+    fed back as lens brightness.
     """
     
     def __init__(self):
@@ -216,34 +218,38 @@ class HRVCoherenceTrainer:
         self.running = True
         start_time = time.time()
         duration_seconds = duration_minutes * 60
-        
+
         # Breathing timing
         breath_period = 60.0 / self.breath_rate
-        inhale_time = breath_period * self.inhale_ratio
-        exhale_time = breath_period * (1 - self.inhale_ratio)
-        
+        cycle_ms = int(breath_period * 1000)
+        inhale_pct = round(self.inhale_ratio * 100)
+
+        # The glasses' on-board breathe engine renders the guide waveform;
+        # we don't stream per-tick opacity over BLE to draw it.
+        await self.glasses.start_breathe(bpm=self.breath_rate, inhale_pct=inhale_pct)
+
         try:
             while self.running and (time.time() - start_time) < duration_seconds:
-                # Inhale phase: clear -> dark
-                await self._breathing_phase(
-                    duration=inhale_time,
-                    start_opacity=0,
-                    end_opacity=1
-                )
-                
-                # Exhale phase: dark -> clear
-                await self._breathing_phase(
-                    duration=exhale_time,
-                    start_opacity=1,
-                    end_opacity=0
-                )
-                
+                # Phase-lock the on-board engine once per breath. sync_breath
+                # must only be sent at the breath-cycle boundary, never
+                # mid-breath (it restarts the waveform instantly).
+                await self.glasses.sync_breath(cycle_ms, inhale_pct=inhale_pct)
+
+                # Wait out one full breath cycle (inhale + exhale)
+                await asyncio.sleep(breath_period)
+
+                # Coherence feedback (computed app-side from RR intervals):
+                # higher coherence = brighter, more visible breathing effect.
+                # Min 30% effect even with low coherence.
+                coherence_scale = 0.3 + 0.7 * self.current_coherence
+                await self.glasses.set_brightness(int(coherence_scale * 100))
+
                 # Status update
                 elapsed = time.time() - start_time
                 remaining = duration_seconds - elapsed
                 avg_coherence = sum(self.coherence_history[-30:]) / max(1, len(self.coherence_history[-30:]))
                 print(f"  Coherence: {avg_coherence:.2f} | {int(remaining)}s remaining")
-        
+
         finally:
             self.running = False
             await self.glasses.clear()
@@ -255,31 +261,6 @@ class HRVCoherenceTrainer:
             import numpy as np
             print(f"Average coherence: {np.mean(self.coherence_history):.2f}")
             print(f"Peak coherence: {np.max(self.coherence_history):.2f}")
-    
-    async def _breathing_phase(self, duration: float, start_opacity: float, end_opacity: float):
-        """Animate one breathing phase with coherence-scaled intensity"""
-        steps = int(duration * 20)  # 20 Hz update rate
-        step_duration = duration / steps
-        
-        for i in range(steps):
-            if not self.running:
-                break
-            
-            progress = i / steps
-            
-            # Base opacity from breathing phase
-            base = start_opacity + (end_opacity - start_opacity) * progress
-            
-            # Scale by coherence (higher coherence = more visible effect)
-            # Min 30% effect even with low coherence
-            coherence_scale = 0.3 + 0.7 * self.current_coherence
-            scaled = base * coherence_scale
-            
-            # Send to glasses
-            opacity = int(scaled * 255)
-            await self.glasses.set_opacity(opacity)
-            
-            await asyncio.sleep(step_duration)
     
     async def cleanup(self):
         """Cleanup connections"""
@@ -321,7 +302,8 @@ class SimpleHRFeedback:
         """Update glasses based on HR"""
         if not self.glasses:
             return
-        
+
+        # Polar notifies at ~1 Hz, well under the <= 20 Hz opacity-write cap
         # Map HR to opacity
         # Higher HR = darker (to encourage relaxation)
         normalized = (hr - self.hr_min) / (self.hr_max - self.hr_min)

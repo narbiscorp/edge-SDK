@@ -30,9 +30,6 @@ class HRVBreathing:
         # 6 breaths/min = 10s cycle = 5s inhale + 5s exhale
         self.inhale_time = 5.0
         self.exhale_time = 5.0
-        
-        # Update rate
-        self.update_hz = 30
     
     async def connect(self):
         """Connect to glasses"""
@@ -51,28 +48,29 @@ class HRVBreathing:
         """
         Run one breathing cycle
         Returns elapsed time
+
+        The lens waveform is rendered by the glasses' on-board breathe
+        engine (started in run()); this method just keeps our app-side
+        breath clock phase-locked to it and prints the pacing prompts.
         """
         cycle_time = self.inhale_time + self.exhale_time
-        update_interval = 1.0 / self.update_hz
-        
-        # Inhale phase: clear -> dark
+        inhale_pct = round(100 * self.inhale_time / cycle_time)
+
+        # Phase-lock the on-board engine to our breath clock. sync_breath
+        # must be sent only at the breath-cycle boundary, never mid-breath
+        # (it restarts the breathe waveform at the instant of the write).
+        await self.glasses.sync_breath(int(cycle_time * 1000), inhale_pct=inhale_pct)
+
+        # Inhale phase: glasses darken on their own
         print("  Inhale...", end="", flush=True)
-        for i in range(int(self.inhale_time * self.update_hz)):
-            progress = i / (self.inhale_time * self.update_hz)
-            opacity = int(progress * 255)
-            await self.glasses.set_opacity(opacity)
-            await asyncio.sleep(update_interval)
+        await asyncio.sleep(self.inhale_time)
         print(" done")
-        
-        # Exhale phase: dark -> clear
+
+        # Exhale phase: glasses clear on their own
         print("  Exhale...", end="", flush=True)
-        for i in range(int(self.exhale_time * self.update_hz)):
-            progress = i / (self.exhale_time * self.update_hz)
-            opacity = int((1 - progress) * 255)
-            await self.glasses.set_opacity(opacity)
-            await asyncio.sleep(update_interval)
+        await asyncio.sleep(self.exhale_time)
         print(" done")
-        
+
         return cycle_time
     
     async def run(self, duration_minutes: float = 5.0):
@@ -90,7 +88,14 @@ class HRVBreathing:
         start_time = time.time()
         target_time = duration_minutes * 60
         breath_count = 0
-        
+
+        # Start the on-board breathe engine; it renders the lens waveform
+        # so we don't stream per-tick opacity over BLE.
+        cycle_time = self.inhale_time + self.exhale_time
+        bpm = max(1, min(30, round(60 / cycle_time)))
+        inhale_pct = round(100 * self.inhale_time / cycle_time)
+        await self.glasses.start_breathe(bpm=bpm, inhale_pct=inhale_pct)
+
         try:
             while self.running and (time.time() - start_time) < target_time:
                 breath_count += 1

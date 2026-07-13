@@ -11,6 +11,8 @@ Open-source smart LCD glasses for meditation, neurofeedback, and biofeedback app
 
 EDGE glasses feature LCD lenses that dynamically change opacity via Bluetooth. An open platform for biofeedback, neurofeedback, and human-computer interaction research.
 
+**Architecture:** all signal processing runs app-side — the glasses are a display. Your app computes its feedback signal (EEG alpha, HRV coherence, GSR, anything) and drives the lens by commanding the firmware's breathe / static / strobe renderer. The firmware still ships a legacy on-board coherence pipeline (sensor-driven PPG programs), but it is unused by current apps and not part of the SDK API.
+
 ### Applications
 
 | Domain | Use Case |
@@ -24,12 +26,13 @@ EDGE glasses feature LCD lenses that dynamically change opacity via Bluetooth. A
 | **rPPG** | Camera-based heart rate, stress monitoring |
 | **GSR/EDA** | Arousal-based feedback, stress response |
 | **Respiration** | Breathing rate entrainment, paced breathing |
+| **Evoked Potentials** | Lens as the visual *stimulator* — SSVEP flicker, transient VEP / P300 flash cues ([example](python-SDK/examples/evoked_potential.py)) |
 | **BCI Research** | Motor imagery, SSVEP, P300 paradigms |
 
 ### Why EDGE?
 
 - **Open Protocol** — Simple BLE API, no vendor lock-in
-- **Low Latency** — 20+ Hz update rate for real-time feedback
+- **Low Latency** — ~12 Hz update rate (production-proven) for real-time feedback
 - **Cross-Platform SDKs** — Python for research, JS for web apps
 - **Sensor Agnostic** — Works with any biosignal source via LSL/brainflow
 - **Research Ready** — Compatible with OpenBCI, Muse, Polar, and lab equipment
@@ -41,18 +44,31 @@ EDGE glasses feature LCD lenses that dynamically change opacity via Bluetooth. A
 | MCU | ESP32-PICO-D4 |
 | Connectivity | Bluetooth Low Energy 4.0+ |
 | Lens Control | PWM-driven LCD opacity |
-| Power | Li-ion battery, ~8hr active |
+| Power | Li-ion battery, ~2–4 hr active |
 | Sleep Current | ~16 µA |
 
 ## Repositories
 
-| Repo | Description |
-|------|-------------|
-| [firmware](https://github.com/edge-glasses/firmware) | ESP32 firmware with BLE GATT server |
-| [python-sdk](https://github.com/edge-glasses/python-sdk) | Python SDK with OpenBCI/Muse/Polar examples |
-| [js-sdk](https://github.com/edge-glasses/js-sdk) | JavaScript/TypeScript SDK for web apps |
+| Location | Description |
+|----------|-------------|
+| [Protocol reference](docs/bluetooth-protocol.md) | Standalone BLE protocol reference — both devices, all frames, OTA, legacy opcodes (in this repo) |
+| [python-SDK/](python-SDK/) | Python SDK with OpenBCI/Muse/Polar examples |
+| [js-SDK/](js-SDK/) | JavaScript/TypeScript SDK for web apps |
 
 ## Quick Start
+
+The glasses advertise as **`Narbis_Edge`**. If they don't show up in a scan, tap the magnet on the temple — the radio powers down after 2 minutes with no client connected.
+
+The core integration is **direct tint control — a wearable screen dimmer**. Classic neurofeedback dims the training display when the trainee falls out of condition and clears it when they're in condition; the Edge does the same thing on the lens itself, so it drops into **any protocol** (SMR, alpha/theta, HEG, EMG down-training, HRV…) wherever your software can emit a feedback value.
+
+**How real-time control works.** Open one BLE connection and hold it. Every time your feedback signal updates, write the lens opacity — a single 2-byte command, `set_static(duty)`, where `duty` runs **0 (clear) → 100 (fully dark)**. That's the same 0–100% dim level your on-screen dimmer already computes, so you point the existing signal at the lens instead of the screen. The streaming contract:
+
+- **Rate:** write at **~12 Hz** (the production-proven rate; 20 Hz is the ceiling). If your signal is faster — a 256 Hz EEG index, say — decimate to ~12 Hz; you don't need a write per sample.
+- **Coalesce:** skip the write when `duty` hasn't changed since the last one — the lens holds its state, so only send real changes.
+- **One in flight:** wait for each write to complete before sending the next (the SDK serializes this for you; on raw BLE, don't overlap writes to the control characteristic).
+- **Latency:** end-to-end signal→lens latency is ~1 connection interval (20–30 ms) plus your processing — well under the perceptual threshold for a dimmer.
+
+The loop below is a complete screen-dimmer replacement — swap `get_feedback()` for your protocol's reward/inhibit value and you're done.
 
 ### Python
 ```bash
@@ -65,8 +81,15 @@ import asyncio
 
 async def main():
     async with Glasses() as glasses:
-        await glasses.set_opacity(128)        # 50% dark
-        await glasses.session_meditate(10)    # 10-min session
+        await glasses.set_duration(60)          # session guard: no auto-sleep for 60 min
+        last = -1
+        while True:
+            reward = get_feedback()             # your protocol's feedback value, 0..1
+            duty = round((1 - reward) * 100)    # in condition → clear; out → dim
+            if duty != last:                    # coalesce unchanged values
+                await glasses.set_static(duty)
+                last = duty
+            await asyncio.sleep(1/12)           # ~12 Hz
 
 asyncio.run(main())
 ```
@@ -80,9 +103,19 @@ npm install edge-glasses
 import { Glasses } from 'edge-glasses';
 
 const glasses = new Glasses();
-await glasses.connect();
-await glasses.setOpacity(128);
-await glasses.sessionMeditate(10);
+await glasses.connect();                  // must come from a user gesture
+await glasses.setDuration(60);            // session guard
+setInterval(async () => {
+  const duty = Math.round((1 - getFeedback()) * 100);  // dim when out of condition
+  await glasses.setStatic(duty);
+}, 1000 / 12);                            // ~12 Hz
+```
+
+Drop-in example: [screen_dimmer.py](python-SDK/examples/screen_dimmer.py). The on-board breathe engine and fixed-parameter sessions are there when a protocol calls for paced breathing:
+
+```python
+await glasses.start_breathe(bpm=6, inhale_pct=40)   # paced breathing, on-board
+await glasses.session_meditate(10)                  # or a 10-min preset
 ```
 
 ## Integrations
@@ -117,60 +150,93 @@ Works with popular biosignal platforms and research equipment. Your computer run
 ### Examples
 | Example | Description |
 |---------|-------------|
-| [openbci_feedback.py](https://github.com/edge-glasses/python-sdk/blob/main/examples/openbci_feedback.py) | EEG alpha neurofeedback |
-| [muse_eeg.py](https://github.com/edge-glasses/python-sdk/blob/main/examples/muse_eeg.py) | Meditation/focus training |
-| [polar_hrv.py](https://github.com/edge-glasses/python-sdk/blob/main/examples/polar_hrv.py) | HRV coherence training |
-| [lsl_integration.py](https://github.com/edge-glasses/python-sdk/blob/main/examples/lsl_integration.py) | Any LSL-compatible source |
-| [Integration Guide](https://github.com/edge-glasses/python-sdk/blob/main/docs/INTEGRATION_GUIDE.md) | Full setup documentation |
+| [screen_dimmer.py](python-SDK/examples/screen_dimmer.py) | **Wearable screen dimmer** — tint from any protocol's feedback value (threshold or proportional) |
+| [openbci_feedback.py](python-SDK/examples/openbci_feedback.py) | EEG alpha neurofeedback |
+| [evoked_potential.py](python-SDK/examples/evoked_potential.py) | Lens as SSVEP / VEP / P300 visual stimulator (with LSL markers) |
+| [muse_eeg.py](python-SDK/examples/muse_eeg.py) | Meditation/focus training |
+| [polar_hrv.py](python-SDK/examples/polar_hrv.py) | HRV coherence training |
+| [lsl_integration.py](python-SDK/examples/lsl_integration.py) | Any LSL-compatible source |
+| [Integration Guide](python-SDK/docs/INTEGRATION_GUIDE.md) | Full setup documentation |
 
 ## BLE Protocol
 
-Simple byte-based protocol for direct integration:
+Simple byte-based protocol for direct integration. Service `0x00FF`, control characteristic `0xFF01`, write with response.
 
 | Command | Bytes | Description |
 |---------|-------|-------------|
-| Opacity | `[0x00-0xFF]` | Set lens opacity (single byte) |
-| Strobe | `[0xA1, start, end]` | Set frequency range 1-50 Hz |
-| Brightness | `[0xA2, percent]` | Set max brightness 0-100% |
-| Breathing | `[0xA3, inh, h_in, exh, h_out]` | Set breathing pattern |
-| Duration | `[0xA4, minutes]` | Set session length |
-| Hold | `[0xA5, duty]` | Static hold at duty % |
-| Resume | `[0xA6]` | Restart session |
-| Sleep | `[0xA7]` | Enter deep sleep |
+| Opacity (legacy) | `[0x00-0xFF]` | Single byte = lens opacity 0-255; stops current mode |
+| Brightness | `[0xA2, pct]` | Level 0-100% (persisted) — writes the same variable as `0xA5` and sets breathe depth; not a max/ceiling |
+| Duration | `[0xA4, minutes]` | Session length 1-60 min, auto-sleep at end (persisted) |
+| Static | `[0xA5, duty]` | Static mode at duty 0-100% |
+| Start strobe | `[0xA6, 0x00]` | Start strobe mode |
+| Sleep | `[0xA7, 0x00]` | Enter deep sleep now |
+| Strobe frequency | `[0xAB, hz]` | 1-50 Hz (persisted) |
+| Strobe duty | `[0xAC, pct]` | 10-90% (persisted) |
+| Start breathe | `[0xB0, mode]` | `0x00` breathe / `0x01` breathe+strobe |
+| Breathe rate | `[0xB1, bpm]` | 1-30 BPM (persisted) |
+| Breathe inhale ratio | `[0xB2, pct]` | 10-90% (persisted) |
+| Breathe hold-top | `[0xB3, n]` | 0-50 × 100 ms (persisted) |
+| Breathe hold-bottom | `[0xB4, n]` | 0-50 × 100 ms (persisted) |
+| Breathe waveform | `[0xB5, w]` | 0 sine / 1 linear (persisted) |
+| Breathe sync | `[0xBA, cycle_lo, cycle_hi, inhale_pct]` | Phase-lock; send at breath boundary only |
+| Factory reset | `[0xBF, 0x00]` | Reset persisted settings |
 
-Full protocol: [API Reference](https://github.com/edge-glasses/firmware/blob/main/docs/API_REFERENCE.md)
+**Important:** every opcode command must be at least 2 bytes — a 1-byte write is always interpreted as the legacy opacity command. Pad argument-less opcodes with `0x00`.
+
+Full protocol (including OTA and legacy opcodes): [Protocol reference](docs/bluetooth-protocol.md) · [API Reference](firmware/API_REFERENCE.md)
+
+### Connection quirks
+
+- Advertised name is exactly `Narbis_Edge` — filter on it.
+- **2-minute teardown:** with no client connected, the radio powers down fully after 2 minutes. Tap the magnet on the temple to re-arm advertising.
+- **No NACKs:** the firmware silently clamps or drops out-of-range arguments. Validate values client-side (the SDKs do).
+- MTU 247, no pairing/bonding, 32 s supervision timeout.
 
 ## Features
 
-### Timed Sessions
-Glasses run autonomous meditation sessions with:
-- Strobe frequency that slows over time (e.g., 12→8 Hz)
-- Breathing pattern with growing hold times
-- Auto-sleep when session completes
+### Standalone programs
 
-### Preset Programs
-| Preset | Strobe | Breathing | Best For |
-|--------|--------|-----------|----------|
-| Relax | 10→4 Hz | 5s cycles | Stress relief, wind-down |
-| Focus | 15→10 Hz | 3s cycles | Concentration, study |
-| Meditate | 12→8 Hz | 4s cycles | General practice |
-| Sleep | 6→2 Hz | 6s cycles | Pre-sleep routine |
+The glasses work without any app. A short magnet tap (0.15-4 s) on the temple cycles through three sensor-free programs; the lens signals the new program with N slow fade-dark pulses:
 
-### Real-time Control
-Update opacity at 20+ Hz for smooth neurofeedback:
+| Program | Behavior |
+|---------|----------|
+| 1 — Breathe | 6 BPM sine, lens tint follows the waveform (boot default) |
+| 2 — Breathe + Strobe | 10 Hz strobe, dark-phase duty modulated by the breathing waveform |
+| 3 — Strobe | Plain 10 Hz strobe |
+
+Hold the magnet closed ≥ 5 s for deep sleep.
+
+### Preset sessions
+
+Presets are fixed-parameter: the firmware no longer ramps strobe frequency or grows hold times over a session. Each preset configures the breathe/strobe engine, sets the duration, and starts; the device auto-sleeps when the session ends.
+
+| Preset | Mode | Parameters | Best For |
+|--------|------|------------|----------|
+| `sessionRelax(10)` | Breathe | 5 BPM sine, brightness 100 | Stress relief, wind-down |
+| `sessionMeditate(10)` | Breathe | 6 BPM sine (device default) | General practice |
+| `sessionFocus(10)` | Breathe + strobe | 12 Hz strobe, 8 BPM | Concentration, study |
+| `sessionSleep(15)` | Breathe | 4 BPM sine | Pre-sleep routine |
+
+### Real-time control
+
+Update opacity for smooth neurofeedback — at ~12 Hz (the production-proven rate; ~20 Hz is only a tolerated ceiling):
+
 ```python
 while True:
     alpha = get_eeg_alpha()  # Your processing
     await glasses.set_opacity(int(alpha * 255))
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(1 / 12)  # ~12 Hz
 ```
+
+For breathing entrainment, prefer the on-board breathe engine (configure, start, optionally `syncBreath()` once per breath at the cycle boundary) over streaming per-tick opacity.
 
 ## Documentation
 
-- [API Reference](https://github.com/edge-glasses/firmware/blob/main/docs/API_REFERENCE.md) — Complete BLE protocol
-- [Integration Guide](https://github.com/edge-glasses/python-sdk/blob/main/docs/INTEGRATION_GUIDE.md) — OpenBCI, Muse, Polar, LSL setup
-- [Python SDK Docs](https://github.com/edge-glasses/python-sdk#readme)
-- [JavaScript SDK Docs](https://github.com/edge-glasses/js-sdk#readme)
+- [API Reference](firmware/API_REFERENCE.md) — Complete BLE command reference
+- [Protocol deep-dive](docs/bluetooth-protocol.md) — Full firmware protocol, OTA, legacy opcodes
+- [Integration Guide](python-SDK/docs/INTEGRATION_GUIDE.md) — OpenBCI, Muse, Polar, LSL setup
+- [Python SDK Docs](python-SDK/README.md)
+- [JavaScript SDK Docs](js-SDK/README.md)
 
 ## Community
 
