@@ -353,7 +353,7 @@ export class Glasses {
    * configured).
    *
    * The failsafe fires when the firmware declares the link dead, bounded
-   * by the ~20 s supervision timeout - still send an explicit clear()
+   * by the ~32 s supervision timeout - still send an explicit clear()
    * before an intentional disconnect.
    *
    * Requires fw >= 4.15.7; older firmware ignores the write.

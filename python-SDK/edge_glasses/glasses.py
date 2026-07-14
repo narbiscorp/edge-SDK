@@ -400,7 +400,7 @@ class Glasses:
         loss (riding the set_lens_smoothing glide if configured).
 
         The failsafe fires when the firmware declares the link dead,
-        bounded by the ~20 s supervision timeout - still send an
+        bounded by the ~32 s supervision timeout - still send an
         explicit clear() before an intentional disconnect.
 
         Args:
