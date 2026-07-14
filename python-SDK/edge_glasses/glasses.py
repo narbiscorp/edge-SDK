@@ -2,6 +2,9 @@
 EDGE Glasses - Main SDK module
 
 Targets glasses firmware 4.15.6+ (device name ``Narbis_Edge``).
+The lens-config methods (set_lens_smoothing / set_lens_max_rate /
+set_disconnect_behavior) need firmware 4.15.7+; older firmware ignores
+them, so they are always safe to call.
 
 All biofeedback processing runs app-side: the glasses are a display.
 Configure and start the firmware's breathe / static / strobe renderer,
@@ -342,6 +345,69 @@ class Glasses:
         """
         minutes = max(1, min(60, int(minutes)))
         await self._send(bytes([0xA4, minutes]))
+
+    # -------------------------------------------------------------------------
+    # Lens Config (firmware >= 4.15.7; older firmware ignores these)
+    # -------------------------------------------------------------------------
+
+    async def set_lens_smoothing(self, ms: int) -> None:
+        """
+        Set on-device lens smoothing (0xA0)
+
+        Persisted in NVS. The firmware glides between commanded static
+        targets (set_static / set_opacity / the disconnect fail-clear)
+        with an EMA of this time constant, so a low-rate or lossy
+        feedback stream renders as smooth motion instead of steps.
+        Rule of thumb: 1-2x your write period (12 Hz stream -> 80-160 ms).
+        Does not affect breathe/strobe waveforms.
+
+        Args:
+            ms: Time constant 0-2550 ms, 10 ms resolution. 0 = off (snap).
+
+        Example:
+            await glasses.set_lens_smoothing(100)  # 100 ms glide
+            await glasses.set_lens_smoothing(0)    # snap (factory default)
+        """
+        tau = max(0, min(255, int(ms) // 10))
+        await self._send(bytes([0xA0, tau]))
+
+    async def set_lens_max_rate(self, percent_per_100ms: int) -> None:
+        """
+        Cap how fast the lens may transition (0xA1)
+
+        Persisted in NVS. A hard slew limit on commanded static
+        transitions, applied after the smoothing glide - a safety
+        envelope that guarantees the lens cannot snap even if a host
+        streams garbage. 40 corresponds to full-scale in ~250 ms (the
+        breathe engine's own internal limit). Does not affect
+        breathe/strobe waveforms.
+
+        Args:
+            percent_per_100ms: Max change 0-100 %/100ms. 0 = unlimited
+                (factory default).
+        """
+        rate = max(0, min(100, int(percent_per_100ms)))
+        await self._send(bytes([0xA1, rate]))
+
+    async def set_disconnect_behavior(self, fail_clear: bool) -> None:
+        """
+        Choose what the lens does when the BLE link drops (0xA3)
+
+        Persisted in NVS. Factory default (False): the lens FREEZES at
+        its last commanded output across a disconnect - a crashed app
+        leaves the last tint in place. With fail_clear=True the glasses
+        instead stop any strobe and drop to a clear static lens on link
+        loss (riding the set_lens_smoothing glide if configured).
+
+        The failsafe fires when the firmware declares the link dead,
+        bounded by the ~20 s supervision timeout - still send an
+        explicit clear() before an intentional disconnect.
+
+        Args:
+            fail_clear: True = go clear on disconnect, False = continue
+                the running program (factory default).
+        """
+        await self._send(bytes([0xA3, 0x01 if fail_clear else 0x00]))
 
     # -------------------------------------------------------------------------
     # Mode Commands

@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as f:
 
 setup(
     name="edge-glasses",
-    version="2.1.0",
+    version="2.2.0",
     author="EDGE Technologies",
     author_email="dev@edge-glasses.com",
     description="Python SDK for EDGE Smart Glasses",

@@ -1,7 +1,7 @@
 # EDGE Glasses Python SDK — API Reference
 
-**Firmware 4.15.6+ — July 2026**
-**SDK version:** 2.0.0
+**Firmware 4.15.6+ (lens-config methods need 4.15.7+) — July 2026**
+**SDK version:** 2.2.0
 
 This document maps every Python SDK method to the exact bytes it writes over BLE.
 For the full protocol (OTA, status/notify, PPG stream), see the
@@ -54,6 +54,14 @@ sends a single byte.
 | `set_static(duty)` | `[0xA5, duty]` | 0-100% | no |
 | `set_strobe_frequency(hz)` | `[0xAB, hz]` | 1-50 Hz | yes |
 | `set_strobe_duty(percent)` | `[0xAC, pct]` | 10-90% | yes |
+
+### Lens config (firmware ≥ 4.15.7; older firmware ignores these)
+
+| Method | Wire bytes | Range (SDK clamps) | Persisted (NVS) |
+|--------|-----------|--------------------|-----------------|
+| `set_lens_smoothing(ms)` | `[0xA0, ms // 10]` | 0-2550 ms (10 ms resolution); 0 = off — EMA glide between commanded static targets | yes |
+| `set_lens_max_rate(percent_per_100ms)` | `[0xA1, rate]` | 0-100 %/100ms; 0 = unlimited — hard slew cap after the smoothing glide | yes |
+| `set_disconnect_behavior(fail_clear)` | `[0xA3, 0x01/0x00]` | True = go clear on link loss, False = freeze at last output (default) | yes |
 
 ### Modes
 
@@ -115,7 +123,10 @@ configure the renderer and set the auto-sleep duration.
 | Opcode | Name | Arg | Persisted (NVS) | SDK method |
 |--------|------|-----|-----------------|------------|
 | *(1 byte)* | Legacy opacity | 0-255 → 0-100% static duty; stops current mode | no | `set_opacity` |
+| `0xA0` | Lens smoothing | EMA τ ×10 ms (0 = off); fw ≥ 4.15.7 | yes | `set_lens_smoothing` |
+| `0xA1` | Lens max transition rate | 0-100 %/100ms (0 = unlimited); fw ≥ 4.15.7 | yes | `set_lens_max_rate` |
 | `0xA2` | Brightness | 0-100% | yes | `set_brightness` |
+| `0xA3` | On-disconnect behavior | 0 continue / 1 fail clear; fw ≥ 4.15.7 | yes | `set_disconnect_behavior` |
 | `0xA4` | Session duration | 1-60 min (auto-sleep at end; default 30 min; timer runs from device wake — see protocol doc session-auto-sleep note) | yes | `set_duration` |
 | `0xA5` | Static mode + duty | 0-100% | no | `set_static` |
 | `0xA6` | Start strobe mode | arg ignored (send 0) | no | `start_strobe` |

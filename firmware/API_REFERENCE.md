@@ -1,6 +1,6 @@
 # EDGE Glasses BLE API Reference
 
-**Firmware Version:** 4.15.6+
+**Firmware Version:** 4.15.7+
 **Last Updated:** July 2026
 
 ---
@@ -51,7 +51,10 @@ Any single-byte write sets lens opacity directly:
 | Opcode | Name | Arg | Persisted (NVS) | Notes |
 |--------|------|-----|-----------------|-------|
 | *(1 byte)* | Legacy opacity | 0-255 → 0-100% static duty | no | Stops current mode |
+| `0xA0` | Lens smoothing | 0-255 (EMA τ × 10 ms; 0 = off) | yes | fw ≥ 4.15.7 (older fw ignores). On-device glide between commanded static targets — low-rate feedback streams render smooth. τ ≈ 1-2× your write period (12 Hz → 8-16) |
+| `0xA1` | Lens max transition rate | 0-100 %/100 ms (0 = unlimited) | yes | fw ≥ 4.15.7 (older fw ignores). Hard slew cap on commanded static transitions, applied after `0xA0` smoothing. Breathe/strobe waveforms unaffected |
 | `0xA2` | Brightness | 0-100 % | yes | Sets + persists the SAME `brightness` variable `0xA5` writes — NOT a ceiling clamping `0xA5` (a later `0xA5` simply overwrites it); takes effect immediately; does not change mode; also serves as the breathe depth/amplitude (see protocol doc §4.6.1) |
+| `0xA3` | On-disconnect behavior | `0x00` continue (default) / `0x01` fail clear | yes | fw ≥ 4.15.7 (older fw ignores). `0x01`: on link loss, stop strobe + drop to clear static (rides the `0xA0` glide) instead of freezing at the last output. Bounded by the supervision timeout |
 | `0xA4` | Session duration | 1-60 min | yes | Device auto-sleeps when the session ends (default 30 min; persisted; timer runs from device wake — see the protocol doc's session-auto-sleep note) |
 | `0xA5` | Static mode + duty | 0-100 % | no | Enters static mode at the given duty |
 | `0xA6` | Start strobe mode | ignored (send `0x00`) | no | Uses stored frequency/duty (`0xAB`/`0xAC`) |
