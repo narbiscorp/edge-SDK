@@ -6,7 +6,9 @@ The glasses are a **display**: your app computes its biofeedback signal (EEG alp
 HRV, GSR, ...) and drives the lens by commanding the firmware's breathe / static /
 strobe renderer. All coherence / HRV processing runs app-side.
 
-Requires glasses firmware 4.15.6 or later. Full protocol details:
+Requires glasses firmware 4.15.6 or later (the lens-config settings —
+`setLensSmoothing` / `setLensMaxRate` / `setDisconnectBehavior` — need 4.15.7+;
+older firmware ignores them). Full protocol details:
 [Bluetooth protocol deep-dive](../docs/bluetooth-protocol.md).
 
 ## Installation
@@ -272,6 +274,9 @@ function GlassesControl() {
 | `setDuration(1-60)` | Session length in minutes (auto-sleep at end) |
 | `setStrobeFrequency(1-50)` | Strobe frequency in Hz |
 | `setStrobeDuty(10-90)` | Strobe dark-phase duty % |
+| `setLensSmoothing(ms)` | On-device glide between streamed targets, EMA τ 0-2550 ms, 0 = off (fw 4.15.7+) |
+| `setLensMaxRate(pct)` | Hard cap on lens transition speed, %/100ms, 0 = unlimited (fw 4.15.7+) |
+| `setDisconnectBehavior(failClear)` | `true` = lens goes clear on link loss instead of freezing (fw 4.15.7+) |
 
 ### Modes
 

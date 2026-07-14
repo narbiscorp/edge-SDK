@@ -302,6 +302,70 @@ export class Glasses {
   }
 
   // -------------------------------------------------------------------------
+  // Lens Config (firmware >= 4.15.7; older firmware ignores these)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Set on-device lens smoothing (opcode 0xA0). Persisted in NVS.
+   *
+   * The firmware glides between commanded static targets (setStatic /
+   * setOpacity / the disconnect fail-clear) with an EMA of this time
+   * constant, so a low-rate or lossy feedback stream renders as smooth
+   * motion instead of steps. Rule of thumb: 1-2x your write period
+   * (12 Hz stream -> 80-160 ms). Breathe/strobe waveforms unaffected.
+   *
+   * Requires fw >= 4.15.7; older firmware ignores the write, so it is
+   * always safe to call.
+   *
+   * @param ms Time constant 0-2550 ms (10 ms resolution). 0 = off (snap).
+   */
+  async setLensSmoothing(ms: number): Promise<void> {
+    const tau = clamp(ms / 10, 0, 255);
+    await this.send([0xA0, tau]);
+  }
+
+  /**
+   * Cap how fast the lens may transition (opcode 0xA1). Persisted in NVS.
+   *
+   * A hard slew limit on commanded static transitions, applied after the
+   * smoothing glide - a safety envelope that guarantees the lens cannot
+   * snap even if a host streams garbage. 40 corresponds to full-scale in
+   * ~250 ms (the breathe engine's own internal limit). Breathe/strobe
+   * waveforms unaffected.
+   *
+   * Requires fw >= 4.15.7; older firmware ignores the write.
+   *
+   * @param percentPer100ms Max change 0-100 %/100ms. 0 = unlimited (default).
+   */
+  async setLensMaxRate(percentPer100ms: number): Promise<void> {
+    const rate = clamp(percentPer100ms, 0, 100);
+    await this.send([0xA1, rate]);
+  }
+
+  /**
+   * Choose what the lens does when the BLE link drops (opcode 0xA3).
+   * Persisted in NVS.
+   *
+   * Factory default (false): the lens FREEZES at its last commanded output
+   * across a disconnect - a crashed app leaves the last tint in place.
+   * With `failClear: true` the glasses instead stop any strobe and drop to
+   * a clear static lens on link loss (riding the setLensSmoothing glide if
+   * configured).
+   *
+   * The failsafe fires when the firmware declares the link dead, bounded
+   * by the ~20 s supervision timeout - still send an explicit clear()
+   * before an intentional disconnect.
+   *
+   * Requires fw >= 4.15.7; older firmware ignores the write.
+   *
+   * @param failClear true = go clear on disconnect, false = continue the
+   *   running program (factory default)
+   */
+  async setDisconnectBehavior(failClear: boolean): Promise<void> {
+    await this.send([0xA3, failClear ? 0x01 : 0x00]);
+  }
+
+  // -------------------------------------------------------------------------
   // Strobe Mode
   // -------------------------------------------------------------------------
 

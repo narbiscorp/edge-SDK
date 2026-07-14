@@ -163,7 +163,10 @@ Simple byte-based protocol for direct integration. Service `0x00FF`, control cha
 | Command | Bytes | Description |
 |---------|-------|-------------|
 | Opacity (legacy) | `[0x00-0xFF]` | Single byte = lens opacity 0-255; stops current mode |
+| Lens smoothing | `[0xA0, tau]` | EMA glide between streamed targets, τ ×10 ms, 0 = off (persisted; fw 4.15.7+) |
+| Lens max rate | `[0xA1, rate]` | Transition-speed cap %/100ms, 0 = unlimited (persisted; fw 4.15.7+) |
 | Brightness | `[0xA2, pct]` | Level 0-100% (persisted) — writes the same variable as `0xA5` and sets breathe depth; not a max/ceiling |
+| On-disconnect | `[0xA3, mode]` | 0 = freeze at last output (default) / 1 = fail clear on link loss (persisted; fw 4.15.7+) |
 | Duration | `[0xA4, minutes]` | Session length 1-60 min, auto-sleep at end (persisted) |
 | Static | `[0xA5, duty]` | Static mode at duty 0-100% |
 | Start strobe | `[0xA6, 0x00]` | Start strobe mode |

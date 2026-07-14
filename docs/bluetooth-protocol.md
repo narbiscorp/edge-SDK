@@ -2,7 +2,7 @@
 
 > **Audience.** Developers speaking the wire protocol directly — **Python** (via [bleak](https://github.com/hbldh/bleak)) or **JavaScript** (via Web Bluetooth) — whether you're using the edge-SDK libraries or bypassing them. Everything a client needs to talk to the **Narbis Edge** glasses and the **Narbis Earclip** over BLE is in this document.
 >
-> **Provenance.** Synced to glasses firmware **4.15.6+** and earclip firmware **config v4** — July 2026.
+> **Provenance.** Synced to glasses firmware **4.15.7+** and earclip firmware **config v4** — July 2026.
 >
 > **Scope.** Scanning, connecting, GATT discovery, command writes, notification parsing, driving the lens ([§4.6](#46-driving-the-edge-lens)), OTA firmware update, troubleshooting.
 >
@@ -38,6 +38,7 @@ The minimal path for a third party whose software already produces a feedback va
 3. **Discover** service `0x00FF`, characteristic `0xFF01` (Control).
 4. **Write `[0xA4, 0x3C]`** — a 60-minute session guard, so the auto-sleep timer doesn't end your session early ([§4.1.2](#412-session-auto-sleep--the-0xa4-timer)).
 5. **Loop at ≤ 12 Hz:** map your signal 0..1 → duty 0..100 and write `[0xA5, duty]`. Skip the write if the duty is unchanged, and keep at most one write in flight.
+6. *(Optional, fw ≥ 4.15.7)* **Write `[0xA0, 0x0A]`** once — 100 ms of on-device smoothing, so the lens glides between your stream's steps instead of stepping ([§4.3](#43-control-characteristic-0xff01--command-opcodes)). Persisted; older firmware ignores it.
 
 Sanity test: `[0xA5, 0x64]` = fully dark, `[0xA5, 0x00]` = fully clear.
 
@@ -233,7 +234,7 @@ Both devices auto-resume advertising on disconnect — reconnect with exponentia
 After every reconnect:
 
 - **CCCD subscriptions are per-connection** — re-enable notify on `0xFF03` (and any other notify characteristic you use) after each reconnect.
-- **CCCD subscriptions are lost on disconnect; lens state is NOT — the lens FREEZES at its last commanded output.** The Edge's disconnect handler and idle radio teardown clear only connection/notification state: the lens keeps rendering its last commanded mode and duty across a disconnect, so a crashed app leaves the last tint in place (e.g. fully dark at duty 100) until reconnect, a magnet action, or session-expiry deep sleep (default 30 min, `0xA4`-configurable). Re-send your full lens setup on every reconnect because the device state is UNKNOWN (frozen), not reset — and before an *intentional* disconnect send `[0xA5, 0]` (static mode, 0 % = clear) or `[0xA7, 0x00]` (immediate sleep, clears the lens) so the wearer is not left dark. (`0xBA` breathe sync is the exception: it is not cleared by disconnect either but self-expires ~2 breath cycles after the last sync frame — time-based, connected or not — after which breathe falls back to the local integer-`0xB1` timing.) NVS-persisted params (`0xA2`, `0xA4`, `0xAB`, `0xAC`, `0xB1`–`0xB5`, `0xB8`, `0xB9`, `0xE0`) additionally survive reboots.
+- **CCCD subscriptions are lost on disconnect; lens state is NOT — the lens FREEZES at its last commanded output.** The Edge's disconnect handler and idle radio teardown clear only connection/notification state: the lens keeps rendering its last commanded mode and duty across a disconnect, so a crashed app leaves the last tint in place (e.g. fully dark at duty 100) until reconnect, a magnet action, or session-expiry deep sleep (default 30 min, `0xA4`-configurable). Re-send your full lens setup on every reconnect because the device state is UNKNOWN (frozen), not reset — and before an *intentional* disconnect send `[0xA5, 0]` (static mode, 0 % = clear) or `[0xA7, 0x00]` (immediate sleep, clears the lens) so the wearer is not left dark. **fw ≥ 4.15.7: the freeze is a *default*, not a law** — write `[0xA3, 0x01]` once (persisted) and the glasses instead fail to a clear static lens on any disconnect: strobe stopped, duty 0, riding the `0xA0` smoothing glide if configured ([§4.3](#43-control-characteristic-0xff01--command-opcodes)). The failsafe fires when the *firmware* declares the link dead, which is bounded by the 20 s supervision timeout — a crashed app can still leave the wearer dark for up to ~20 s, so the pre-disconnect clear write above remains good practice. Even with the failsafe set, re-send your full lens setup on reconnect. (`0xBA` breathe sync is the exception: it is not cleared by disconnect either but self-expires ~2 breath cycles after the last sync frame — time-based, connected or not — after which breathe falls back to the local integer-`0xB1` timing.) NVS-persisted params (`0xA2`, `0xA4`, `0xAB`, `0xAC`, `0xB1`–`0xB5`, `0xB8`, `0xB9`, `0xE0`; fw ≥ 4.15.7 adds `0xA0`, `0xA1`, `0xA3`) additionally survive reboots.
 - **No application keep-alive is needed while connected** — the 2-minute teardown applies only when no client is connected; the idle deadline is cleared on connect.
 
 ---
@@ -785,7 +786,10 @@ Most commands are a 2-byte write `[opcode, arg]`. The firmware **never sends a G
 | Opcode | Name | Arg | Persisted? | Notes |
 |---|---|---|---|---|
 | *(1 byte)* | Legacy opacity | 0–255 → 0–100 % static duty | no | Stops the current mode; see warning above |
+| `0xA0` | Lens smoothing | 0–255 (EMA τ, ×10 ms → 0–2.55 s; 0 = off) | yes (NVS) | fw ≥ 4.15.7, older fw ignores ([§9.3](#93-firmware-featureversion-matrix)). On-device glide between **commanded static** targets (`0xA5`, the 1-byte opacity write, the `0xA3` fail-clear) — a low-rate or lossy feedback stream ([§4.6.1](#461-continuous-opacity-feedback--the-biofeedback-pattern)) renders as a glide instead of steps. Set τ ≈ 1–2× your write period (12 Hz stream → ~80–160 ms → arg 8–16). Strobe, breathe, and the standalone programs are unaffected. |
+| `0xA1` | Lens max transition rate | 0–100 (%/100 ms; 0 = unlimited) | yes (NVS) | fw ≥ 4.15.7, older fw ignores. Hard slew cap on commanded static transitions, applied **after** `0xA0` smoothing — a safety envelope guaranteeing the lens can't snap even if a host streams garbage (40 ≈ full-scale in 250 ms, the breathe engine's own internal limit). Does not affect breathe/strobe waveforms. |
 | `0xA2` | Set brightness | 0–100 (%) | yes (NVS) | Sets + persists the same `brightness` variable `0xA5` writes ([§4.6.1](#461-continuous-opacity-feedback--the-biofeedback-pattern)); doubles as breathe **depth** ([§4.6.3](#463-the-breathe-op-set)) |
+| `0xA3` | On-disconnect behavior | `0x00` continue (default) / `0x01` fail clear | yes (NVS) | fw ≥ 4.15.7, older fw ignores. `0x01`: on link loss the glasses stop any strobe and drop to a clear static lens (duty 0, riding the `0xA0` glide if set) instead of freezing at the last output ([§2.5](#25-reconnection)). Fires when the firmware declares the link dead — bounded by the 20 s supervision timeout. Magnet-tap standalone programs still work afterwards. |
 | `0xA4` | Set session duration | 1–60 (minutes) | yes | Auto-sleep (deep sleep) at session end. Default 30 min; the clock runs from device wake — writing `0xA4` changes the total but does **not** restart it ([§4.1.2](#412-session-auto-sleep--the-0xa4-timer)) |
 | `0xA5` | Static LED mode | 0–100 (duty %) | no | The continuous-feedback stream opcode ([§4.6.1](#461-continuous-opacity-feedback--the-biofeedback-pattern)); writes the same variable as `0xA2`, without persisting |
 | `0xA6` | Strobe LED mode | any | no | starts strobe ISR |
@@ -1150,6 +1154,7 @@ The primary third-party integration pattern: your software produces a feedback v
   2. **Never overlap writes** — if one is in flight, drop the frame (the next catches up). See the serialization rule in [§4.3](#43-control-characteristic-0xff01--command-opcodes).
   3. **Keep exactly one write in flight** — `0xFF01` is **write-with-response only** on current firmware ([§4.2](#42-service-0x00ff--characteristic-map); only OTA `0xFF02` exposes write-no-response), and the with-response round-trip is exactly why the one-write-in-flight rule matters at 12 Hz. If you add a property guard like the production dashboard's (`ch.properties?.writeWithoutResponse` → without-response, else with-response), write-without-response will be used automatically if a future firmware adds the property.
 - The 1-byte legacy opacity write (0–255, [§4.3](#43-control-characteristic-0xff01--command-opcodes)) is an equivalent alternative under the same cadence rules.
+- **Smoothing the stream (fw ≥ 4.15.7):** write `[0xA0, τ]` once (persisted) and the device glides between your streamed targets with an EMA of time constant τ×10 ms — steps from a 10–12 Hz stream, RF retransmit gaps, and rate drops all render as smooth motion. Rule of thumb: τ ≈ 1–2× your write period (12 Hz → arg 8–16 ≈ 80–160 ms). Pair with `[0xA1, slew]` if you also want a hard cap on how fast the lens may move ([§4.3](#43-control-characteristic-0xff01--command-opcodes)). Both are ignored by older firmware, so send them unconditionally.
 
 Language-neutral wire sequence (worked examples in the [quickstart](#quickstart--make-the-lens-respond-to-your-signal)):
 
@@ -1973,6 +1978,7 @@ OTA — Shared between Edge and Earclip (same UUIDs)
 
 | Feature | Minimum glasses fw | Behaviour on older firmware |
 |---|---|---|
+| `0xA0`/`0xA1`/`0xA3` lens-config knobs (smoothing / slew cap / disconnect fail-clear) | 4.15.7 | ignored (unknown opcodes) — lens snaps, no slew cap, disconnect freezes at last output |
 | `0xBA` breathe-sync | 4.15.5 | ignored (unknown opcode) |
 | `0xB0 0x01` breathe+strobe | 4.15.6 | plain breathe |
 | duty→opacity floor remap ([§4.6.4](#464-lens-opacity-is-not-linear--the-dutyopacity-floor-fw--4154)) | 4.15.4 | no floor remap |

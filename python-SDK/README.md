@@ -45,6 +45,7 @@ asyncio.run(main())
 - On-board breathe engine (rate, inhale ratio, holds, waveform, optional strobe modulation)
 - Breath phase-lock (`sync_breath`) for app-paced, fractional-rate breathing
 - Strobe mode (1-50 Hz, 10-90% duty)
+- Lens-config knobs (fw 4.15.7+): on-device smoothing so streamed feedback glides, a transition-rate safety cap, and go-clear-on-disconnect
 - Fixed-parameter preset sessions (relax, focus, meditate, sleep)
 - Async/await API using `bleak` BLE library
 - Cross-platform (Windows, macOS, Linux, Raspberry Pi)
@@ -238,6 +239,9 @@ Full method → wire-byte mapping in [docs/API_REFERENCE.md](docs/API_REFERENCE.
 | `await glasses.set_static(0-100)` | Static mode at duty % |
 | `glasses.start_feedback_stream(rate_hz=12)` | Plug-and-play real-time stream: returns a `FeedbackStream` — `feed(duty)` / `feed_reward(0..1)` for proportional dimming; `await reward_event(duty, hold_ms)` for immediate discrete operant rewards (bypasses the tick); internal writer coalesces + serializes; `await stream.stop()` clears the lens |
 | `await glasses.set_brightness(0-100)` | Lens level / breathe depth (persisted; same firmware variable `set_static` writes — not a ceiling) |
+| `await glasses.set_lens_smoothing(ms)` | On-device glide between streamed targets, EMA τ 0-2550 ms, 0 = off (persisted; fw 4.15.7+) |
+| `await glasses.set_lens_max_rate(pct)` | Hard cap on lens transition speed, %/100ms, 0 = unlimited (persisted; fw 4.15.7+) |
+| `await glasses.set_disconnect_behavior(fail_clear)` | True = lens goes clear on link loss instead of freezing (persisted; fw 4.15.7+) |
 | `await glasses.sleep()` | Enter deep sleep |
 | `await glasses.factory_reset()` | Reset persisted settings |
 
