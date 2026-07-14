@@ -261,7 +261,7 @@ function GlassesControl() {
 | `clear()` | Fully transparent |
 | `dark()` | Fully opaque |
 | `setStatic(0-100)` | Static mode at duty cycle % |
-| `startFeedbackStream(rateHz=12)` | Plug-and-play real-time stream: returns a `FeedbackStream` — `feed(duty)` / `feedReward(0..1)` from any callback; internal writer coalesces + serializes; `stop()` clears the lens |
+| `startFeedbackStream(rateHz=12)` | Plug-and-play real-time stream: returns a `FeedbackStream` — `feed(duty)` / `feedReward(0..1)` for proportional dimming; `rewardEvent(duty, holdMs)` for immediate discrete operant rewards (bypasses the tick); internal writer coalesces + serializes; `stop()` clears the lens |
 | `sleep()` | Enter deep sleep |
 
 ### Settings (persisted on device)

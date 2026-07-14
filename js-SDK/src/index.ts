@@ -7,7 +7,7 @@
  * firmware's breathe / static / strobe renderer.
  *
  * @module edge-glasses
- * @version 2.1.0
+ * @version 2.2.0
  */
 
 // BLE UUIDs
@@ -493,11 +493,16 @@ export class Glasses {
    * unchanged values and keeping exactly one BLE write in flight. Replaces a
    * hand-rolled decimate/coalesce/serialize loop.
    *
+   * Proportional feedback (a dimmer that tracks your signal) uses feed() /
+   * feedReward(); discrete operant rewards use rewardEvent(), which fires
+   * immediately instead of waiting for the next tick.
+   *
    * ```ts
    * const stream = glasses.startFeedbackStream();
    * yourPipeline.onUpdate((v) => stream.feedReward(v)); // 0..1, any rate
    * // ...
-   * await stream.stop(); // stops the writer and clears the lens
+   * await stream.rewardEvent(0, 150);   // discrete reward, delivered now
+   * await stream.stop();                // stops the writer and clears the lens
    * ```
    */
   startFeedbackStream(rateHz = 12): FeedbackStream {
@@ -517,15 +522,19 @@ export class Glasses {
 export class FeedbackStream {
   private duty: number | null = null;   // latest requested duty 0-100
   private lastSent = -1;
-  private busy = false;
+  private inflight: Promise<void> | null = null;   // the one write currently on the wire
+  private holdUntil = 0;                // Date.now() until which a reward tint holds
   private timer: ReturnType<typeof setInterval>;
 
   constructor(private glasses: Glasses, rateHz = 12) {
     const hz = Math.max(1, Math.min(20, rateHz)); // 20 Hz ceiling
-    this.timer = setInterval(() => void this.tick(), 1000 / hz);
+    this.timer = setInterval(() => this.tick(), 1000 / hz);
   }
 
-  /** Request a lens duty: 0 = clear … 100 = fully dark. Any call rate is fine. */
+  /**
+   * Request a lens duty: 0 = clear … 100 = fully dark. Any call rate is fine.
+   * Use this for PROPORTIONAL feedback (a dimmer that tracks your signal).
+   */
   feed(duty: number): void {
     this.duty = clamp(Math.round(duty), 0, 100);
   }
@@ -539,17 +548,40 @@ export class FeedbackStream {
     this.feed((1 - v) * 100);
   }
 
-  private async tick(): Promise<void> {
-    if (this.busy || this.duty === null || this.duty === this.lastSent) return;
-    this.busy = true;
-    this.lastSent = this.duty;
-    try {
-      await this.glasses.setStatic(this.lastSent);
-    } catch {
-      this.lastSent = -1;                 // failed write: retry next tick
-    } finally {
-      this.busy = false;
-    }
+  /**
+   * Deliver a DISCRETE reward NOW, bypassing the stream tick.
+   *
+   * For operant conditioning: call the instant your detector crosses
+   * threshold. Unlike feed(), which parks the value for the next scheduled
+   * tick (up to one stream period later), this writes immediately — latency
+   * is just the BLE transport (~20–60 ms), with no cadence jitter. It
+   * preempts the proportional stream, waiting at most one in-flight write.
+   *
+   * @param duty Reward tint 0–100 (default 0 = fully clear = positive reward)
+   * @param holdMs Hold the reward tint this long before the proportional
+   *   stream resumes (0 = the next feed() value takes back over immediately)
+   */
+  async rewardEvent(duty = 0, holdMs = 0): Promise<void> {
+    if (this.inflight) { try { await this.inflight; } catch { /* ignore */ } }
+    await this.doWrite(clamp(Math.round(duty), 0, 100));
+    if (holdMs > 0) this.holdUntil = Date.now() + holdMs;
+  }
+
+  /** Serialized single write: only one setStatic() is ever on the wire. */
+  private doWrite(duty: number): Promise<void> {
+    const p = (async () => {
+      try { await this.glasses.setStatic(duty); this.lastSent = duty; }
+      catch { this.lastSent = -1; }        // failed write: retry next tick
+      finally { this.inflight = null; }
+    })();
+    this.inflight = p;
+    return p;
+  }
+
+  private tick(): void {
+    if (this.inflight || this.duty === null
+        || Date.now() < this.holdUntil || this.duty === this.lastSent) return;
+    void this.doWrite(this.duty);
   }
 
   /**

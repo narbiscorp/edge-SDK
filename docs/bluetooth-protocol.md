@@ -1157,6 +1157,14 @@ Language-neutral wire sequence (worked examples in the [quickstart](#quickstart-
 connect  →  [0xA4, 0x3C]  (60-min session guard)  →  loop: [0xA5, duty]
 ```
 
+> ### Reward-timing note — proportional vs. discrete (operant conditioning)
+>
+> The ~12 Hz cadence above is a **smoothing rate for a continuously-varying dimmer**, not a reinforcement-latency floor. Two distinct cases:
+> - **Proportional feedback** (tint tracks a signal): 12 Hz (~83 ms granularity) is far below the upstream EEG analysis window (typically 250 ms – 1 s+) that dominates the loop, so it is not the limiting term.
+> - **Discrete reward** (reinforce the instant a contingency is met): do **not** wait for the next tick — send the `[0xA5, duty]` write immediately. `0xA5` applies on-device with **no firmware smoothing** (the slew limiter is `LED_MODE_BREATHE` only), and the lens cell switches fast (**Ton 2.5–40 ms / Toff 2.5–50 ms, < 100 ms all modes, slower when cold**). Reward-delivery latency is then ~20–60 ms transport + < 100 ms lens switch — bounded by your signal processing, not the streaming rate.
+>
+> The SDK `FeedbackStream` exposes this split directly: `feed()` / `feed_reward()` for the proportional stream, `reward_event(duty, hold_ms)` for an immediate, tick-bypassing discrete reward that preempts the stream (waiting at most one in-flight write).
+
 > **On connect** the lens is already running a standalone program until your first write takes over — normally Breathe at the **NVS-persisted** `0xB1` rate (factory default 6 BPM; a previous client's setting survives, [§4.3](#43-control-characteristic-0xff01--command-opcodes)), or a strobe program if a magnet tap already cycled it ([§4.1.1](#411-standalone-programs--magnet-gestures)). Don't treat "6 BPM breathe" as a connect-time invariant.
 >
 > **`0xA5` and `0xA2` write the SAME firmware variable** (`brightness`): `0xA5` = enter static mode + set the level (not persisted); `0xA2` = set the same value AND persist it. There is **no** separate ceiling clamping `0xA5`. Side effect: the last streamed `0xA5` value becomes the breathe **depth** if you later switch to breathe mode without re-sending `0xA2`.

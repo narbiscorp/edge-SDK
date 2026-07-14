@@ -43,7 +43,8 @@ EDGE glasses feature LCD lenses that dynamically change opacity via Bluetooth. A
 |-----------|---------------|
 | MCU | ESP32-PICO-D4 |
 | Connectivity | Bluetooth Low Energy 4.0+ |
-| Lens Control | PWM-driven LCD opacity |
+| Lens Control | PWM-driven electrochromic opacity |
+| Lens Switching | Ton 2.5-40 ms, Toff 2.5-50 ms (< 100 ms all modes, slower when cold) |
 | Power | Li-ion battery, ~2–4 hr active |
 | Sleep Current | ~16 µA |
 
@@ -63,12 +64,15 @@ The core integration is **direct tint control — a wearable screen dimmer**. Cl
 
 **How real-time control works.** Open one BLE connection and hold it. Every time your feedback signal updates, write the lens opacity — a single 2-byte command, `set_static(duty)`, where `duty` runs **0 (clear) → 100 (fully dark)**. That's the same 0–100% dim level your on-screen dimmer already computes, so you point the existing signal at the lens instead of the screen. The streaming contract:
 
-- **Rate:** the BLE link runs on a 20–30 ms connection interval (~33–50 connection events/sec — the glasses request it; the host **OS BLE stack** grants it, and your application can't change it), so the transport can physically carry more writes than you should send. Write at **~12 Hz**: the production-proven application rate, with link headroom left for status notifications and write retries — a lens dimmer gains nothing perceptually beyond it. 20 Hz is the documented ceiling. If your signal is faster — a 256 Hz EEG index, say — decimate; you don't need a write per sample.
+- **Rate (proportional feedback):** the BLE link runs on a 20–30 ms connection interval (~33–50 connection events/sec — the glasses request it; the host **OS BLE stack** grants it, and your application can't change it), so the transport can carry more writes than a dimmer needs. Stream a continuously-varying tint at **~12 Hz**: the production-proven application rate, with link headroom left for status notifications and retries. 20 Hz is the documented ceiling. Decimate a faster signal (a 256 Hz EEG index, say) — you don't need a write per sample. **This 12 Hz is a smoothing cadence, not a reward-latency floor** (see below).
 - **Coalesce:** skip the write when `duty` hasn't changed since the last one — the lens holds its state, so only send real changes.
 - **One in flight:** never overlap writes to the control characteristic (on raw BLE, wait for each write to complete before sending the next).
-- **Latency:** each individual write lands on the lens in ~1–2 connection intervals (**~20–60 ms transport delay**). End-to-end responsiveness adds your update period on top (at 12 Hz, up to ~83 ms between value changes) plus your processing — comfortably inside dimmer-perception territory, and why pushing past 12 Hz buys nothing visible.
+- **Latency:** each write lands on the lens in ~1–2 connection intervals (**~20–60 ms transport**), then the lens itself switches in **Ton 2.5–40 ms / Toff 2.5–50 ms (< 100 ms all modes, slower when cold)** — a fast cell, not the bottleneck. `set_static()` applies on-device with no firmware smoothing (the slew limiter is breathe-mode only), so the tint change is immediate.
 
-**The SDKs ship this whole contract as a built-in:** `start_feedback_stream()` returns a `FeedbackStream` — call `feed_reward(value)` (0..1, 1 = in condition) or `feed(duty)` (0–100, your dimmer's existing scale) from any callback at any rate, and the stream's internal writer handles the 12 Hz decimation, coalescing, and write serialization. The snippets below are complete screen-dimmer replacements; for the hand-rolled loop or the raw-BLE byte sequence, see the [protocol doc quickstart](docs/bluetooth-protocol.md).
+> ### Reward timing / operant conditioning
+> A **continuous dimmer** and a **discrete reward** have different latency needs, and the 12 Hz cadence only governs the first. For proportional feedback, 12 Hz updates (~83 ms granularity) sit far below your upstream EEG analysis window (typically 250 ms–1 s+), which dominates the loop. For a **discrete reinforcement** — a reward the instant a contingency is met — don't wait for the next stream tick: fire the write immediately. The reward path is then just **~20–60 ms transport + < 100 ms lens switch**, with the analysis window as the only larger term. So the reinforcement latency is bounded by your signal processing, **not** by the 12 Hz streaming rate. (The SDK's `reward_event()` does exactly this — see below.)
+
+**The SDKs ship this whole contract as a built-in:** `start_feedback_stream()` returns a `FeedbackStream`. For proportional feedback, call `feed_reward(value)` (0..1, 1 = in condition) or `feed(duty)` (0–100, your dimmer's existing scale) from any callback at any rate — the internal writer handles 12 Hz decimation, coalescing, and write serialization. For a discrete operant reward, call **`reward_event(duty=0, hold_ms=…)`**, which writes immediately (bypassing the tick, preempting the stream) so reinforcement isn't gated by the streaming cadence. The snippets below are complete screen-dimmer replacements; for the hand-rolled loop or the raw-BLE byte sequence, see the [protocol doc quickstart](docs/bluetooth-protocol.md).
 
 ### Python
 ```bash

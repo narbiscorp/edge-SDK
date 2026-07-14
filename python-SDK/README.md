@@ -236,7 +236,7 @@ Full method → wire-byte mapping in [docs/API_REFERENCE.md](docs/API_REFERENCE.
 | `await glasses.clear()` | Fully transparent |
 | `await glasses.dark()` | Fully opaque |
 | `await glasses.set_static(0-100)` | Static mode at duty % |
-| `glasses.start_feedback_stream(rate_hz=12)` | Plug-and-play real-time stream: returns a `FeedbackStream` — `feed(duty)` / `feed_reward(0..1)` from any callback; internal writer coalesces + serializes; `await stream.stop()` clears the lens |
+| `glasses.start_feedback_stream(rate_hz=12)` | Plug-and-play real-time stream: returns a `FeedbackStream` — `feed(duty)` / `feed_reward(0..1)` for proportional dimming; `await reward_event(duty, hold_ms)` for immediate discrete operant rewards (bypasses the tick); internal writer coalesces + serializes; `await stream.stop()` clears the lens |
 | `await glasses.set_brightness(0-100)` | Lens level / breathe depth (persisted; same firmware variable `set_static` writes — not a ceiling) |
 | `await glasses.sleep()` | Enter deep sleep |
 | `await glasses.factory_reset()` | Reset persisted settings |

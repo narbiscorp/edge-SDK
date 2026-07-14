@@ -547,9 +547,15 @@ class Glasses:
         coalescing unchanged values and keeping exactly one write in
         flight. Replaces a hand-rolled decimate/coalesce/serialize loop.
 
+        Proportional feedback (a dimmer that tracks your signal) uses
+        feed() / feed_reward(); discrete operant rewards use reward_event(),
+        which fires immediately instead of waiting for the next tick.
+
         Usage:
             stream = glasses.start_feedback_stream()
             your_pipeline.on_update(stream.feed_reward)   # 0..1, any rate
+            ...
+            await stream.reward_event(hold_ms=150)        # discrete reward, now
             ...
             await stream.stop()   # cancels the writer and clears the lens
 
@@ -575,12 +581,16 @@ class FeedbackStream:
         self._interval = 1.0 / max(1.0, min(20.0, rate_hz))  # 20 Hz ceiling
         self._duty: Optional[int] = None    # latest requested duty, 0-100
         self._last_sent = -1
-        self._task = asyncio.get_running_loop().create_task(self._run())
+        self._loop = asyncio.get_running_loop()
+        self._lock = asyncio.Lock()         # serializes writer vs. reward_event
+        self._hold_until = 0.0              # loop.time() until which a reward tint holds
+        self._task = self._loop.create_task(self._run())
 
     def feed(self, duty: int) -> None:
         """Request a lens duty: 0 = clear ... 100 = fully dark.
 
         Cheap and safe to call at any rate; only changed values reach BLE.
+        Use this for PROPORTIONAL feedback (a dimmer that tracks your signal).
         """
         self._duty = max(0, min(100, int(round(duty))))
 
@@ -592,15 +602,46 @@ class FeedbackStream:
         value = max(0.0, min(1.0, float(value)))
         self.feed((1.0 - value) * 100)
 
+    async def reward_event(self, duty: int = 0, hold_ms: int = 0) -> None:
+        """Deliver a DISCRETE reward NOW, bypassing the stream tick.
+
+        For operant conditioning: call the instant your detector crosses
+        threshold. Unlike feed(), which parks the value for the next
+        scheduled tick (up to one stream period later), this writes
+        immediately -- latency is just the BLE transport (~20-60 ms), with
+        no cadence jitter. It preempts the proportional stream, waiting at
+        most one in-flight write (never queues behind routine dimmer
+        updates).
+
+        Args:
+            duty: reward tint 0-100 (default 0 = fully clear = positive
+                reward).
+            hold_ms: hold the reward tint this long before the proportional
+                stream resumes (0 = let the next feed() value take back over
+                immediately).
+        """
+        duty = max(0, min(100, int(round(duty))))
+        async with self._lock:              # waits out at most one tick write
+            self._last_sent = duty
+            try:
+                await self._glasses.set_static(duty)
+            except Exception:
+                self._last_sent = -1
+        if hold_ms > 0:
+            self._hold_until = self._loop.time() + hold_ms / 1000.0
+
     async def _run(self) -> None:
         while True:
             duty = self._duty
-            if duty is not None and duty != self._last_sent:
-                self._last_sent = duty          # claim before the await
-                try:
-                    await self._glasses.set_static(duty)
-                except Exception:
-                    self._last_sent = -1        # failed write: retry next tick
+            if (duty is not None and duty != self._last_sent
+                    and self._loop.time() >= self._hold_until
+                    and not self._lock.locked()):   # yield to reward_event
+                async with self._lock:
+                    self._last_sent = duty           # claim before the await
+                    try:
+                        await self._glasses.set_static(duty)
+                    except Exception:
+                        self._last_sent = -1         # failed write: retry next tick
             await asyncio.sleep(self._interval)
 
     async def stop(self, clear: bool = True) -> None:
