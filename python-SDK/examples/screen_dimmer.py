@@ -16,6 +16,11 @@ Two mapping modes:
 Wire it to your protocol by calling LensDimmer.feed(value) with a 0..1
 feedback value (1 = in condition / full reward) from wherever your signal
 lives -- an LSL inlet, a UDP packet, a serial line, a library callback.
+
+NOTE: the SDK ships the raw plumbing as a built-in --
+Glasses.start_feedback_stream() returns a FeedbackStream with the same
+decimate/coalesce/serialize writer. This example keeps its own writer to
+show the pattern and to add threshold logic + smoothing on top.
 Run with --demo for a synthetic signal so you can see it work with no
 sensor attached.
 

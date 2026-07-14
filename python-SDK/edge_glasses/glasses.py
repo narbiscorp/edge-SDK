@@ -532,3 +532,84 @@ class Glasses:
         """
         await self.start_breathe(bpm=4, waveform=Waveform.SINE)
         await self.set_duration(duration)
+
+    # -------------------------------------------------------------------------
+    # Real-time Feedback Streaming
+    # -------------------------------------------------------------------------
+
+    def start_feedback_stream(self, rate_hz: float = 12.0) -> "FeedbackStream":
+        """
+        Open a plug-and-play real-time lens stream (the screen-dimmer pattern)
+
+        Returns a FeedbackStream: push a value from any callback at any
+        rate via feed() / feed_reward(); a background task writes the lens
+        at ``rate_hz`` (default ~12 Hz, the production-proven rate),
+        coalescing unchanged values and keeping exactly one write in
+        flight. Replaces a hand-rolled decimate/coalesce/serialize loop.
+
+        Usage:
+            stream = glasses.start_feedback_stream()
+            your_pipeline.on_update(stream.feed_reward)   # 0..1, any rate
+            ...
+            await stream.stop()   # cancels the writer and clears the lens
+
+        Must be called with an asyncio event loop running (e.g. inside
+        ``async with Glasses() as glasses:``).
+        """
+        return FeedbackStream(self, rate_hz=rate_hz)
+
+
+class FeedbackStream:
+    """
+    Push-style real-time lens control - a wearable screen dimmer
+
+    Created via Glasses.start_feedback_stream(). Call feed()/feed_reward()
+    from anywhere (BLE notification handlers, LSL callbacks, UDP readers -
+    any rate); the internal writer decimates to the stream rate, skips
+    unchanged values, and never overlaps BLE writes. A failed write resets
+    the coalesce key so the next tick retries.
+    """
+
+    def __init__(self, glasses: "Glasses", rate_hz: float = 12.0):
+        self._glasses = glasses
+        self._interval = 1.0 / max(1.0, min(20.0, rate_hz))  # 20 Hz ceiling
+        self._duty: Optional[int] = None    # latest requested duty, 0-100
+        self._last_sent = -1
+        self._task = asyncio.get_running_loop().create_task(self._run())
+
+    def feed(self, duty: int) -> None:
+        """Request a lens duty: 0 = clear ... 100 = fully dark.
+
+        Cheap and safe to call at any rate; only changed values reach BLE.
+        """
+        self._duty = max(0, min(100, int(round(duty))))
+
+    def feed_reward(self, value: float) -> None:
+        """Request tint from a 0..1 reward value (1 = in condition = clear).
+
+        The classic dimmer mapping: duty = (1 - value) * 100.
+        """
+        value = max(0.0, min(1.0, float(value)))
+        self.feed((1.0 - value) * 100)
+
+    async def _run(self) -> None:
+        while True:
+            duty = self._duty
+            if duty is not None and duty != self._last_sent:
+                self._last_sent = duty          # claim before the await
+                try:
+                    await self._glasses.set_static(duty)
+                except Exception:
+                    self._last_sent = -1        # failed write: retry next tick
+            await asyncio.sleep(self._interval)
+
+    async def stop(self, clear: bool = True) -> None:
+        """Stop the writer. By default clears the lens - it otherwise
+        FREEZES at the last tint (see protocol doc, Reconnection)."""
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        if clear and self._glasses.is_connected:
+            await self._glasses.clear()

@@ -17,7 +17,7 @@ npm install edge-glasses
 
 ## Quick Start
 
-**Real-time opacity streaming — a drop-in screen-dimmer replacement.** Hold one connection open and write the lens opacity whenever your signal updates: `setStatic(duty)`, `duty` 0 (clear) → 100 (fully dark) — the same 0–100% your on-screen dimmer already produces. Stream at ~12 Hz (decimate faster signals), coalesce unchanged values, and let the SDK serialize the writes.
+**Real-time opacity streaming — a drop-in screen-dimmer replacement.** Hold one connection open and push your feedback value into a `FeedbackStream`: `feed(duty)` takes the same 0 (clear) → 100 (fully dark) your on-screen dimmer already produces, `feedReward(v)` takes a 0..1 reward value. Call them from any callback at any rate — the stream's internal writer handles the ~12 Hz decimation, unchanged-value coalescing, and write serialization for you.
 
 ```typescript
 import { Glasses } from 'edge-glasses';
@@ -25,15 +25,14 @@ import { Glasses } from 'edge-glasses';
 const glasses = new Glasses();
 
 // The core pattern: a wearable screen dimmer. Map ANY protocol's feedback
-// value (0..1) to lens tint -- dim when out of condition, clear when in.
+// value to lens tint -- dim when out of condition, clear when in.
 // Must be called from a user gesture (button click).
 document.getElementById('connect')?.addEventListener('click', async () => {
   await glasses.connect();
-  await glasses.setDuration(60);                         // session guard: no auto-sleep for 60 min
-  setInterval(async () => {
-    const duty = Math.round((1 - getFeedback()) * 100);  // your protocol's 0..1 feedback value
-    await glasses.setStatic(duty);                       // 0 = clear, 100 = fully dark
-  }, 1000 / 12);                                         // ~12 Hz
+  await glasses.setDuration(60);                 // session guard: no auto-sleep for 60 min
+  const stream = glasses.startFeedbackStream();  // 12 Hz writer -- coalesces + serializes for you
+  onFeedback((v) => stream.feedReward(v));       // push your 0..1 feedback value, any callback, any rate
+  // or stream.feed(duty) with your dimmer's existing 0-100% value
 });
 
 // Paced breathing, when the protocol calls for it:
@@ -262,6 +261,7 @@ function GlassesControl() {
 | `clear()` | Fully transparent |
 | `dark()` | Fully opaque |
 | `setStatic(0-100)` | Static mode at duty cycle % |
+| `startFeedbackStream(rateHz=12)` | Plug-and-play real-time stream: returns a `FeedbackStream` — `feed(duty)` / `feedReward(0..1)` from any callback; internal writer coalesces + serializes; `stop()` clears the lens |
 | `sleep()` | Enter deep sleep |
 
 ### Settings (persisted on device)
