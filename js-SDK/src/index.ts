@@ -314,6 +314,10 @@ export class Glasses {
    * motion instead of steps. Rule of thumb: 1-2x your write period
    * (12 Hz stream -> 80-160 ms). Breathe/strobe waveforms unaffected.
    *
+   * For a CONTINUOUS stream, use firmware >= 4.15.8: on 4.15.7 the glide
+   * stalls ~2-4% short of each streamed target and clips the extremes.
+   * One-shot writes converge on either.
+   *
    * Requires fw >= 4.15.7; older firmware ignores the write, so it is
    * always safe to call.
    *
