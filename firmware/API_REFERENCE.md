@@ -1,6 +1,6 @@
 # EDGE Glasses BLE API Reference
 
-**Firmware Version:** 4.15.7+ (4.15.8+ for streamed smoothing)
+**Firmware Version:** 4.15.7+ (4.15.9+ for smooth streamed smoothing)
 **Last Updated:** July 2026
 
 This is the **wire / opcode reference** for the Narbis Edge glasses: every BLE command, its bytes, ranges, and on-device behavior. You can drive the glasses directly from raw BLE with only this document.
@@ -131,7 +131,7 @@ Three persisted knobs shape how commanded **static** transitions render. All def
 
 **Tuning:** τ ≈ 1–2× your write period. A 12 Hz stream (~83 ms) → τ arg 8–16 (≈ 80–160 ms).
 
-> **Streaming needs fw ≥ 4.15.8.** On 4.15.7 the EMA accumulator is re-seeded on every write, so under a continuous 12–20 Hz stream the glide stalls ~2–4 % short of each target and clips the waveform extremes. 4.15.8 fixes the convergence; one-shot writes are fine on either.
+> **Streaming needs fw ≥ 4.15.9.** On 4.15.7 the EMA accumulator is re-seeded on every write, so a continuous 12–20 Hz stream stalls ~2–4 % short of each target (fixed in 4.15.8). Through 4.15.8 the smoothed output was still floored to the 101-level integer-duty grid, so the lens showed ~1 %-duty stepping even at max τ; **4.15.9** drives the lens at full 10-bit PWM resolution. One-shot writes are fine on any of them.
 
 ### `0xA1` — Lens max transition rate (slew cap)
 

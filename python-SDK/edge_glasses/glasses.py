@@ -361,9 +361,11 @@ class Glasses:
         Rule of thumb: 1-2x your write period (12 Hz stream -> 80-160 ms).
         Does not affect breathe/strobe waveforms.
 
-        For a CONTINUOUS stream, use firmware >= 4.15.8: on 4.15.7 the
-        glide stalls ~2-4% short of each streamed target and clips the
-        extremes. One-shot writes converge on either.
+        For a CONTINUOUS stream, use firmware >= 4.15.9: 4.15.7 stalls
+        ~2-4% short of each target (fixed in 4.15.8), and through 4.15.8
+        the smoothed output was still floored to ~101 duty levels
+        (visible 1%-duty stepping); 4.15.9 drives the lens at full
+        10-bit PWM resolution. One-shot writes are fine on any.
 
         Args:
             ms: Time constant 0-2550 ms, 10 ms resolution. 0 = off (snap).
