@@ -378,23 +378,50 @@ class Glasses:
         duty = max(0, min(100, int(duty)))
         await self._send(bytes([0xA5, duty]))
 
-    async def set_strobe_frequency(self, hz: int) -> None:
+    async def set_strobe_frequency(self, hz: float) -> None:
         """
         Set strobe frequency (0xAB)
 
         Persisted in NVS. Takes effect immediately if strobing.
 
+        Accepts a float. A whole number of Hz is sent as the 2-byte integer
+        form, which every firmware understands; a fractional rate is sent as
+        the 3-byte deci-Hz form, which needs **fw >= 4.14.41**. Older firmware
+        reads only the first argument byte of a 3-byte frame, so a fractional
+        request there would land on a wildly wrong rate - hence the split,
+        rather than always sending deci-Hz.
+
+        Sub-Hz precision is what entrainment targets need: 13.5 Hz (the
+        alpha-beta edge) and 17.5 Hz both round to the wrong band as integers.
+
+        NOTE: writing this while a strobe is running restarts the strobe
+        phase, exactly as set_strobe_duty() does - the firmware recomputes the
+        cycle. That is fine for setup; do not drive it from a live signal.
+        See docs/strobe-feedback.md.
+
         Args:
-            hz: Frequency 1-50 Hz
+            hz: Frequency 0.5-50 Hz (0.1 Hz resolution on fw >= 4.14.41)
         """
-        hz = max(1, min(50, int(hz)))
-        await self._send(bytes([0xAB, hz]))
+        hz = max(0.5, min(50.0, float(hz)))
+        dhz = int(round(hz * 10))
+        if dhz % 10 == 0:
+            await self._send(bytes([0xAB, dhz // 10]))          # 2-byte form
+        else:
+            await self._send(bytes([0xAB, dhz & 0xFF, dhz >> 8]))  # deci-Hz
 
     async def set_strobe_duty(self, percent: int) -> None:
         """
         Set strobe duty cycle (0xAC)
 
         Persisted in NVS. Takes effect immediately if strobing.
+
+        WARNING - do not drive this from a live feedback signal. The handler
+        calls strobe_update() -> strobe_start(), which zeroes the DDS phase
+        accumulator, so every write RESTARTS the strobe cycle and the wearer
+        sees a brief extra dark pulse. The cost is the write itself, not the
+        size of the change, so rate-limiting does not smooth it - and it hits
+        NVS every time as well. To carry a signal on a running strobe, drive
+        set_brightness() (0xA2) instead: see docs/strobe-feedback.md.
 
         Args:
             percent: Dark-phase duty 10-90%
@@ -492,7 +519,7 @@ class Glasses:
 
     async def start_strobe(
         self,
-        hz: Optional[int] = None,
+        hz: Optional[float] = None,
         duty_pct: Optional[int] = None
     ) -> None:
         """
@@ -501,12 +528,21 @@ class Glasses:
         Optionally writes frequency (0xAB) and duty (0xAC) first; omitted
         parameters keep their current (NVS-persisted) values.
 
+        Both are written BEFORE the mode is entered, so the first flash the
+        wearer sees is the one that was asked for rather than whatever the
+        last client left in NVS.
+
+        To modulate a running strobe from a live signal, drive
+        set_brightness() (0xA2) and nothing else - see
+        docs/strobe-feedback.md, which also covers the client-side smoothing
+        this needs (0xA0 glide does NOT apply to strobe).
+
         Args:
-            hz: Optional strobe frequency 1-50 Hz
+            hz: Optional strobe frequency 0.5-50 Hz (0.1 Hz on fw >= 4.14.41)
             duty_pct: Optional dark-phase duty 10-90%
 
         Example:
-            await glasses.start_strobe(hz=10, duty_pct=50)
+            await glasses.start_strobe(hz=13.5, duty_pct=50)
             await glasses.start_strobe()  # use stored settings
         """
         if hz is not None:

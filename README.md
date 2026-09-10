@@ -55,6 +55,7 @@ EDGE glasses feature LCD lenses that dynamically change opacity via Bluetooth. A
 | Location | Description |
 |----------|-------------|
 | [Protocol reference](docs/bluetooth-protocol.md) | Standalone BLE protocol reference — both devices, all frames, OTA, legacy opcodes (in this repo) |
+| [Strobe feedback guide](docs/strobe-feedback.md) | How to carry a live feedback signal on the strobe without it pulsing dark - read before modulating a running strobe |
 | [python-SDK/](python-SDK/) | Python SDK with OpenBCI/Muse/Polar examples |
 | [js-SDK/](js-SDK/) | JavaScript/TypeScript SDK for web apps |
 | [cpp-SDK/](cpp-SDK/) | C++17 SDK with a flat C API and a Windows (WinRT) Bluetooth transport |
@@ -333,6 +334,7 @@ For breathing entrainment, prefer the on-board breathe engine (configure, start,
 
 - [API Reference](firmware/API_REFERENCE.md) — Complete BLE command reference
 - [Protocol deep-dive](docs/bluetooth-protocol.md) — Full firmware protocol, OTA, legacy opcodes
+- [Strobe feedback guide](docs/strobe-feedback.md) — Modulating a running strobe: which opcode to drive, and the smoothing trap
 - [Integration Guide](python-SDK/docs/INTEGRATION_GUIDE.md) — OpenBCI, Muse, Polar, LSL setup
 - [Python SDK Docs](python-SDK/README.md)
 - [JavaScript SDK Docs](js-SDK/README.md)

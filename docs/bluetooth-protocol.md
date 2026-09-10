@@ -1410,6 +1410,10 @@ async function setStrobeFreqHz(chCtrl, hz) {
 
 > **Strobe needs hard edges — never smooth, slew, or ramp it.** Write the params once and let the firmware's ISR toggle. (The breathe slew limiter in §4.6.5 deliberately does not touch strobe.)
 >
+> ### ➡️ Modulating a running strobe from a live signal? Read **[Carrying a feedback signal on the strobe](strobe-feedback.md)** first.
+>
+> The obvious approach — stream your feedback value onto the dark duty `0xAC` — produces a flash that stutters and pulses dark between updates, and the reason is not visible from this table. `0xAC` calls `strobe_update()` → `strobe_start()`, which zeroes the DDS phase accumulator: **every duty write restarts the strobe cycle**, so the cost is the write itself and no amount of rate-limiting smooths it. Drive **`0xA2` (depth)** instead — the ISR reads `brightness` live as the dark-phase level, so nothing is re-timed — and rate-limit it, because `0xA2` is persisted to NVS on every write. Note also that `0xA0`/`0xA1` are **commanded-static only** and do nothing for a strobe, so client-side smoothing is mandatory there; the guide covers the per-sample-`alpha` trap that has now bitten two shipping products independently.
+>
 > **Breathe + strobe** (a strobe whose dark-duty is modulated by the breathing wave) is entered with **`0xB0 0x01`** (fw ≥ 4.15.6): the breathe arg selects the variant — `0xB0 0x00` = plain breathe, `0xB0 0x01` = breathe+strobe. It stays phase-locked to `0xBA` / `0xB1` / `0xB2` exactly like plain breathe, and toggling the arg `0↔1` preserves the breathe phase. On firmware **< 4.15.6** there is no standalone breathe+strobe opcode — fall back to pure breathe (`0xB0`) **or** pure strobe (`0xA6`).
 
 #### 4.6.7 Backward compatibility & version
